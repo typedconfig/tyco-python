@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tyco import load, loads
+from tyco._parser import _Struct
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -333,9 +334,12 @@ class Port(Struct):
 """)
     
     # Should fail validation once materialized
-    with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
-        context = load(str(config_dir))
-        context.to_object()
+    try:
+        with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
+            context = load(str(config_dir))
+            context.to_object()
+    finally:
+        _Struct._structs.pop('Port', None)
 
 
 def test_base_instance_parent_relationships():

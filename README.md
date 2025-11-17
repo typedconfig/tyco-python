@@ -27,18 +27,16 @@ with tyco.open_example_file() as f:
 config = context.to_object()
 
 # Access global configuration values
-environment = config.environment
-debug = config.debug
-timeout = config.timeout
+timezone = config.timezone
 
 # Access struct instances (lists of Structs)
-databases = config.Database
-servers = config['Server']      # Attribute or dict-style access both work
+applications = config.Application
+hosts = config.Host
 
 # Access individual instance fields
-primary_db = databases[0]
-db_host = primary_db.host
-db_port = primary_db.port
+primary_app = applications[0]
+host = primary_app.host
+port = primary_app.port
 
 # Export to JSON
 json_data = context.to_json()
@@ -54,34 +52,31 @@ The package includes a ready-to-use example Tyco file at:
 You can inspect this file after installation, or load it directly as shown above.
 
 ```tyco
-# Global configuration with type annotations
-str environment: production
-bool debug: false
-int timeout: 30
+str timezone: UTC  # this is a global config setting
 
-# Database configuration struct
-Database:
- *str name:           # Primary key field (*)
-  str host:
-  int port:
-  str connection_string:
-  # Instances
-  - primary, localhost,    5432, "postgresql://localhost:5432/myapp"
-  - replica, replica-host, 5432, "postgresql://replica-host:5432/myapp"
+Application:       # schema defined first, followed by instance creation
+  str service:
+  str profile:
+  str command: start_app {service}.{profile} -p {port.number}
+  Host host:
+  Port port: Port(http_web)  # reference to Port instance defined below
+  - service: webserver, profile: primary, host: Host(prod-01-us)
+  - service: webserver, profile: backup,  host: Host(prod-02-us)
+  - service: database,  profile: mysql,   host: Host(prod-02-us), port: Port(http_mysql)
 
-# Server configuration struct  
-Server:
- *str name:           # Primary key for referencing
-  int port:
-  str host:
-  ?str description:   # Nullable field (?) - can be null
-  # Server instances
-  - web1,    8080, web1.example.com,    description: "Primary web server"
-  - api1,    3000, api1.example.com,    description: null
-  - worker1, 9000, worker1.example.com, description: "Worker number 1"
+Host:
+ *str hostname:  # star character (*) used as reference primary key
+  int cores:
+  bool hyperthreaded: true
+  str os: Debian
+  - prod-01-us, cores: 64, hyperthreaded: false
+  - prod-02-us, cores: 32, os: Fedora
 
-# Feature flags array
-str[] features: [auth, analytics, caching]
+Port:
+ *str name:
+  int number:
+  - http_web,   80  # can skip field keys when obvious
+  - http_mysql, 3306
 ```
 
 ## ✨ Features

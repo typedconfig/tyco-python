@@ -123,8 +123,7 @@ def test_load_from_text_stream():
         context = tyco.load(handle)
 
     config = context.to_object()
-    assert config.environment == 'production'
-    assert config.timeout == 30
+    assert config.timezone == 'UTC'
 
 
 def test_load_from_file_descriptor():
@@ -136,8 +135,7 @@ def test_load_from_file_descriptor():
         os.close(fd)
 
     config = context.to_object()
-    assert config.environment == 'production'
-    assert config.timeout == 30
+    assert config.timezone == 'UTC'
 
 
 def test_readme_example_usage():
@@ -145,16 +143,20 @@ def test_readme_example_usage():
         context = tyco.load(handle.name)
 
     config = context.to_object()
-    assert config.environment == 'production'
-    assert config.debug is False
-    assert config.timeout == 30
+    assert config.timezone == 'UTC'
 
-    databases = config['Database']
-    servers = config['Server']
+    applications = config['Application']
+    hosts = config['Host']
+    ports = config['Port']
 
-    assert databases[0].name == 'primary'
-    assert databases[0].host == 'localhost'
-    assert databases[0].port == 5432
-    assert servers[0].port == 8080
-    assert servers[0].name == 'web1'
-    assert context.to_json()['features'] == ['auth', 'analytics', 'caching']
+    assert applications[0].service == 'webserver'
+    assert applications[0].command == 'start_app webserver.primary -p 80'
+    assert applications[0].host.hostname == 'prod-01-us'
+    assert applications[2].port.name == 'http_mysql'
+
+    assert hosts[1].hostname == 'prod-02-us'
+    assert hosts[1].os == 'Fedora'
+    assert ports[0].number == 80
+
+    json_payload = context.to_json()
+    assert json_payload['Port'][1]['number'] == 3306
