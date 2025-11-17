@@ -24,3 +24,6 @@ tyco = "tyco.cli:main"
 
 [tool.setuptools.package-data]
 tyco = [ "example.tyco",]
+
+[tool.setuptools.packages.find]
+exclude = ["recipe*", "tests*"]
