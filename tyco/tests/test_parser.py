@@ -122,9 +122,9 @@ def test_load_from_text_stream():
     with open(example) as handle:
         context = tyco.load(handle)
 
-    globals_obj = context.get_globals()
-    assert globals_obj.environment == 'production'
-    assert globals_obj.timeout == 30
+    config = context.to_object()
+    assert config.environment == 'production'
+    assert config.timeout == 30
 
 
 def test_load_from_file_descriptor():
@@ -135,23 +135,22 @@ def test_load_from_file_descriptor():
     finally:
         os.close(fd)
 
-    globals_obj = context.get_globals()
-    assert globals_obj.environment == 'production'
-    assert globals_obj.timeout == 30
+    config = context.to_object()
+    assert config.environment == 'production'
+    assert config.timeout == 30
 
 
 def test_readme_example_usage():
     with tyco.open_example_file() as handle:
         context = tyco.load(handle.name)
 
-    globals_obj = context.get_globals()
-    assert globals_obj.environment == 'production'
-    assert globals_obj.debug is False
-    assert globals_obj.timeout == 30
+    config = context.to_object()
+    assert config.environment == 'production'
+    assert config.debug is False
+    assert config.timeout == 30
 
-    objects = context.get_objects()
-    databases = objects['Database']
-    servers = objects['Server']
+    databases = config['Database']
+    servers = config['Server']
 
     assert databases[0].name == 'primary'
     assert databases[0].host == 'localhost'

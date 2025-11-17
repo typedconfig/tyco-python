@@ -23,16 +23,17 @@ import tyco
 with tyco.open_example_file() as f:
   context = tyco.load(f.name)
 
-# Access global configuration values
-globals = context.get_globals()
-environment = globals.environment
-debug = globals.debug
-timeout = globals.timeout
+# Materialize configuration as Python objects
+config = context.to_object()
 
-# Get all instances as dictionaries
-objects = context.get_objects()
-databases = objects['Database']  # List of Database instances
-servers = objects['Server']      # List of Server instances
+# Access global configuration values
+environment = config.environment
+debug = config.debug
+timeout = config.timeout
+
+# Access struct instances (lists of Structs)
+databases = config.Database
+servers = config['Server']      # Attribute or dict-style access both work
 
 # Access individual instance fields
 primary_db = databases[0]
@@ -271,22 +272,20 @@ Once parsing succeeds you interact with the returned `TycoContext`.
 ```python
 context = tyco.load("tyco/example.tyco")
 
-globals = context.get_globals()
-print(globals.environment)     # -> "production"
-print(globals.timeout)         # -> 30
+config = context.to_object()
+print(config.environment)     # -> "production"
+print(config.timeout)         # -> 30
 
-objects = context.get_objects()
-databases = objects["Database"]
+databases = config["Database"]
 primary = databases[0]
 print(primary.name, primary.host, primary.port)
 
 json_payload = context.to_json()  # Plain dict ready for json.dumps(...)
 ```
 
-- `get_globals()` returns a `tyco.Struct` instance, so you can use attribute access (`globals.debug`)
-  or dictionary-like access (`globals['debug']`).
-- `get_objects()` returns `dict[str, list[Struct]]`. Each struct instance exposes its declared
-  fields as attributes.
+- `to_object()` returns a `tyco.Struct` where both globals and struct definitions become
+  attributes. Use attribute access (`config.debug`) or dictionary-style access (`config['debug']`).
+- Struct names (e.g. `Database`) materialize as lists of typed `Struct` instances.
 - `to_json()` materialises the canonical JSON-compatible dictionary (matching the shared test
   suite expectations).
 
@@ -311,7 +310,7 @@ Project:
 
 ```python
 context = tyco.load("projects.tyco")
-projects = context.get_objects()["Project"]
+projects = context.to_object().Project
 
 webapp = projects[0]
 owner = webapp.owner           # Already resolved to the underlying User instance
@@ -332,7 +331,7 @@ class Database(tyco.Struct):
             raise ValueError("port must be positive")
 
 context = tyco.load("tyco/example.tyco")
-dbs = context.get_objects()["Database"]
+dbs = context.to_object().Database
 print(isinstance(dbs[0], Database))  # True
 ```
 

@@ -147,16 +147,14 @@ class User(Struct):
             raise ValueError(f"Invalid email format: {self.email}")
         
         # Validate age is positive
-        if self.age < 0:
+        if self.age is not None and self.age < 0:
             raise ValueError(f"Age must be positive: {self.age}")
 """)
     
-    # Load the directory - this should trigger validation
-    context = load(str(config_dir))
-    
-    # Get objects (which triggers validation)
+    # Load the directory - validation should trigger once objects materialize
     with pytest.raises(ValueError, match="Invalid email format"):
-        objects = context.get_objects()
+        context = load(str(config_dir))
+        context.to_object()
 
 
 def test_load_directory_recursive_structure(tmp_path):
@@ -334,11 +332,10 @@ class Port(Struct):
             raise ValueError(f"Invalid protocol: {self.protocol}")
 """)
     
-    context = load(str(config_dir))
-    
-    # Should fail validation on the invalid port
+    # Should fail validation once materialized
     with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
-        objects = context.get_objects()
+        context = load(str(config_dir))
+        context.to_object()
 
 
 def test_base_instance_parent_relationships():
@@ -357,15 +354,17 @@ Person admin: Person(Alice)
 """
     context = loads(content)
     
-    # Check that global attributes have globals as parent (unchanged from your original design)
-    env_attr = context._globals['env']
-    assert env_attr.parent is context._globals
+    globals_map = context._global_instance.inst_kwargs
+
+    # Check that global attributes have globals container as parent (unchanged from your original design)
+    env_attr = globals_map['env']
+    assert env_attr.parent is globals_map
     
-    max_connections_attr = context._globals['max_connections']
-    assert max_connections_attr.parent is context._globals
+    max_connections_attr = globals_map['max_connections']
+    assert max_connections_attr.parent is globals_map
     
-    admin_attr = context._globals['admin']
-    assert admin_attr.parent is context._globals
+    admin_attr = globals_map['admin']
+    assert admin_attr.parent is globals_map
 
 
 def test_template_expansion_with_global_access():
@@ -537,8 +536,8 @@ Organization:
     assert data['Organization'][0]['description'] == "Using field: local-value"
 
 
-def test_get_globals_basic():
-    """Test get_globals() method with basic global variables."""
+def test_to_object_basic_globals():
+    """Ensure to_object() exposes simple global variables."""
     content = """
 str environment: production
 int port: 8080
@@ -550,17 +549,17 @@ Server:
   - web1
 """
     context = loads(content)
-    globals_obj = context.get_globals()
+    config = context.to_object()
     
     # Test dot notation access to global variables
-    assert globals_obj.environment == "production"
-    assert globals_obj.port == 8080
-    assert globals_obj.debug is False
-    assert globals_obj.version == 1.2
+    assert config.environment == "production"
+    assert config.port == 8080
+    assert config.debug is False
+    assert config.version == 1.2
 
 
-def test_get_globals_with_complex_types():
-    """Test get_globals() with arrays and complex global variables."""
+def test_to_object_with_complex_globals():
+    """Ensure to_object() handles arrays and complex global variables."""
     content = """
 str[] environments: ["dev", "staging", "prod"]
 int[] ports: [8080, 8081, 8082]
@@ -570,33 +569,33 @@ Database:
   - primary
 """
     context = loads(content)
-    globals_obj = context.get_globals()
+    config = context.to_object()
     
     # Test array access
-    assert globals_obj.environments == ["dev", "staging", "prod"]
-    assert globals_obj.ports == [8080, 8081, 8082]
-    assert len(globals_obj.environments) == 3
-    assert globals_obj.ports[0] == 8080
+    assert config.environments == ["dev", "staging", "prod"]
+    assert config.ports == [8080, 8081, 8082]
+    assert len(config.environments) == 3
+    assert config.ports[0] == 8080
 
 
-def test_get_globals_empty_context():
-    """Test get_globals() with no global variables defined."""
+def test_to_object_empty_context():
+    """Ensure to_object() still works without explicit globals."""
     content = """
 Server:
  *str name:
   - web1
 """
     context = loads(content)
-    globals_obj = context.get_globals()
+    config = context.to_object()
     
     # Should return an object with no attributes (but not fail)
     # We can check if accessing undefined attributes raises AttributeError
     with pytest.raises(AttributeError):
-        _ = globals_obj.nonexistent_var
+        _ = config.nonexistent_var
 
 
-def test_get_globals_with_templates():
-    """Test get_globals() when global variables use templates."""
+def test_to_object_globals_with_templates():
+    """Ensure to_object() resolves templates declared in globals."""
     content = """
 str env: staging
 str region: us-west-2
@@ -608,31 +607,31 @@ App:
   - myapp
 """
     context = loads(content)
-    globals_obj = context.get_globals()
+    config = context.to_object()
     
     # Test that templated globals are expanded
-    assert globals_obj.env == "staging"
-    assert globals_obj.region == "us-west-2"
-    assert globals_obj.domain == "example.com"
-    assert globals_obj.full_domain == "staging.us-west-2.example.com"
+    assert config.env == "staging"
+    assert config.region == "us-west-2"
+    assert config.domain == "example.com"
+    assert config.full_domain == "staging.us-west-2.example.com"
 
 
-def test_get_globals_attribute_access_vs_dict():
-    """Test that get_globals() returns an object with dot notation access, not a dict."""
+def test_to_object_attribute_access_vs_dict():
+    """Ensure to_object() returns an object that supports attribute access."""
     content = """
 str app_name: MyApplication
 int timeout: 30
 """
     context = loads(content)
-    globals_obj = context.get_globals()
+    config = context.to_object()
     
     # Should work with dot notation
-    assert globals_obj.app_name == "MyApplication"
-    assert globals_obj.timeout == 30
+    assert config.app_name == "MyApplication"
+    assert config.timeout == 30
     
     # Should not be a dictionary
-    assert not isinstance(globals_obj, dict)
+    assert not isinstance(config, dict)
     
     # Should raise AttributeError for undefined attributes
     with pytest.raises(AttributeError):
-        _ = globals_obj.undefined_attribute
+        _ = config.undefined_attribute
