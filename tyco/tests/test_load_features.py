@@ -343,7 +343,7 @@ class Port(Struct):
 
 
 def test_base_instance_parent_relationships():
-    """Test that base instances (globals) have the globals dict as their parent."""
+    """Test that base instances (globals) have the global instance as their parent."""
     content = """
 str env: production
 int max_connections: 1000
@@ -358,17 +358,17 @@ Person admin: Person(Alice)
 """
     context = loads(content)
     
-    globals_map = context._global_instance.inst_kwargs
+    global_instance = context._global_instance
 
-    # Check that global attributes have globals container as parent (unchanged from your original design)
-    env_attr = globals_map['env']
-    assert env_attr.parent is globals_map
+    # Check that global attributes have the global instance as parent
+    env_attr = global_instance.inst_kwargs['env']
+    assert env_attr.parent is global_instance
     
-    max_connections_attr = globals_map['max_connections']
-    assert max_connections_attr.parent is globals_map
+    max_connections_attr = global_instance.inst_kwargs['max_connections']
+    assert max_connections_attr.parent is global_instance
     
-    admin_attr = globals_map['admin']
-    assert admin_attr.parent is globals_map
+    admin_attr = global_instance.inst_kwargs['admin']
+    assert admin_attr.parent is global_instance
 
 
 def test_template_expansion_with_global_access():

@@ -402,7 +402,7 @@ class TycoLexer:
                         if self.lines:
                             self.lines[0] = self.lines[0].lstrip()
                         continue
-                    attr, delim = self._load_tyco_attr(good_delim=(',', os.linesep), pop_empty_lines=False)
+                    attr, delim = self._load_tyco_attr(good_delim=(',', os.linesep), pop_empty_lines=False, allow_attr_name=True)
                     inst_args.append(attr)
                 instance_fragment = inst_args[0].fragment if inst_args else line
                 default_kwargs = self.defaults[struct.type_name]
@@ -418,15 +418,15 @@ class TycoLexer:
                     self.context._structs[None].schema[attr_name] = TycoField(struct.type_name, is_primary, is_nullable, is_array)
                 globals_map[attr_name].add_element(inst)
 
-    def _load_tyco_attr(self, good_delim=(os.linesep,), bad_delim='', pop_empty_lines=True, already_found_attr_name=False):
+    def _load_tyco_attr(self, good_delim=(os.linesep,), bad_delim='', pop_empty_lines=True, allow_attr_name=False):
         bad_delim = set(bad_delim) | set('()[],') - set(good_delim)
         if match := re.match(rf'{self.ire}\s*:\s*', self.lines[0]):     # times don't match this regex
-            if already_found_attr_name:
+            if not allow_attr_name:
                 error_text = f'Colon : found in content - enclose in quotes to prevent being used as a field name: {match.groups()[0]}'
                 raise TycoParseError(error_text, self.lines[0])
             attr_name = match.groups()[0]
             self.lines[0] = self.lines[0][match.span()[1]:]
-            attr, delim = self._load_tyco_attr(good_delim, bad_delim, pop_empty_lines, already_found_attr_name=True)
+            attr, delim = self._load_tyco_attr(good_delim, bad_delim, pop_empty_lines, allow_attr_name=False)
             attr.attr_name = attr_name
             return attr, delim
         ch = self.lines[0][:1]
@@ -437,7 +437,7 @@ class TycoLexer:
             invocation_fragment = self.lines[0]
             type_name = match.groups()[0]
             self.lines[0] = self.lines[0][match.span()[1]:]
-            inst_args = self._load_list(')', invocation_fragment)
+            inst_args = self._load_list(')', invocation_fragment, allow_attr_name=True)
             if type_name not in self.context._structs or self.context._structs[type_name].primary_keys:
                 attr = TycoReference(self.context, inst_args, type_name, invocation_fragment)
             else:
@@ -495,7 +495,7 @@ class TycoLexer:
         content = self._load_list(']', opening_fragment)
         return TycoArray(self.context, content, opening_fragment)
 
-    def _load_list(self, closing_char, opening_fragment):
+    def _load_list(self, closing_char, opening_fragment, allow_attr_name=False):
         good_delims = (closing_char, ',')
         bad_delims  = ')' if closing_char == ']' else ']'
         array = []
@@ -508,7 +508,7 @@ class TycoLexer:
             if self.lines[0].startswith(closing_char):                  # can happen with a trailing comma
                 self.lines[0] = self.lines[0][1:]
                 break
-            attr, delim = self._load_tyco_attr(good_delims, bad_delims)
+            attr, delim = self._load_tyco_attr(good_delims, bad_delims, allow_attr_name=allow_attr_name)
             array.append(attr)
             if delim == closing_char:
                 break
@@ -731,7 +731,10 @@ class TycoInstance:
         self._as_json   = None
 
     def make_copy(self):
-        inst_kwargs = {a: i.make_copy() for a, i in self.inst_kwargs.items()}
+        inst_kwargs = {}
+        for attr_name, attr in self.inst_kwargs.items():
+            inst_kwargs[attr_name] = attr.make_copy()
+            inst_kwargs[attr_name].attr_name = attr.attr_name
         return self.__class__(self.context, inst_kwargs, self.type_name, self.fragment)
 
     @property
@@ -756,7 +759,7 @@ class TycoInstance:
             self._error(f"Instance of {self} used for field {self.attr_name} that expects type {self.field_info.type_name}")
         if self.field_info.is_array and not isinstance(self.parent, TycoArray):
             self._error(f"Instance of '{self}' used for field {self.attr_name} which expects a list")
-        for attr in self.inst_kwargs.values():
+        for attr_type, attr in self.inst_kwargs.items():
             attr.validate_field_info()
 
     def render_base_content(self):
