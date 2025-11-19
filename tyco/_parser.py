@@ -688,7 +688,7 @@ class TycoStruct:
     def load_primary_keys(self, inst):
         if not self.primary_keys:
             return
-        key = tuple(inst[k].rendered for k in self.primary_keys)
+        key = tuple(inst[k].to_object() for k in self.primary_keys)
         if key in self.mapped_instances:
             raise TycoParseError(f"{inst.type_name} with primary key {key} already exists", inst.fragment)
         self.mapped_instances[key] = inst
@@ -705,7 +705,7 @@ class TycoStruct:
             attr.set_parent(self)                   # use a struct instance as the parent since it has the schema
             attr.render_base_content()
             inst_kwargs[attr.attr_name] = attr
-        key = tuple(inst_kwargs[attr_name].rendered for attr_name in self.primary_keys)
+        key = tuple(inst_kwargs[attr_name].to_object() for attr_name in self.primary_keys)
         if key not in self.mapped_instances:
             fragment = inst_kwargs[self.primary_keys[0]].fragment
             raise TycoParseError(f"{self.type_name}{key!r} is referenced, but instance can not be found", fragment)
@@ -720,6 +720,8 @@ class TycoStruct:
 
 class TycoInstance:
 
+    _unrendered = object()
+
     def __init__(self, context, inst_kwargs, type_name, fragment=None):
         self.context = context
         self.inst_kwargs = inst_kwargs      # {attr_name : TycoValue|TycoInstance|TycoArray|TycoReference}
@@ -727,8 +729,8 @@ class TycoInstance:
         self.fragment = fragment
         self.attr_name  = None              # set later
         self.parent     = None              # set later
-        self._as_object = None
-        self._as_json   = None
+        self._as_object = self._unrendered
+        self._as_json   = self._unrendered
 
     def make_copy(self):
         inst_kwargs = {}
@@ -777,18 +779,14 @@ class TycoInstance:
         for i in self.inst_kwargs.values():
             i.render_templates()
 
-    @property
-    def rendered(self):
-        return {a : i.rendered for a, i in self.inst_kwargs.items()}
-
     def to_object(self):
-        if self._as_object is None:
+        if self._as_object is self._unrendered:
             kwargs = {a : v.to_object() for a, v in self.inst_kwargs.items()}
             self._as_object = _Struct.create_object(self.context, self.type_name, **kwargs)
         return self._as_object
 
     def to_json(self):
-        if self._as_json is None:
+        if self._as_json is self._unrendered:
             self._as_json = {a : v.to_json() for a, v in self.inst_kwargs.items()}
         return self._as_json
 
@@ -796,9 +794,7 @@ class TycoInstance:
         return self.inst_kwargs[attr_name]
 
     def __str__(self):
-# TODO
-#        return f'TycoInstance({self.type_name}, {self.inst_kwargs})'
-        return f'TycoInstance({self.type_name})'
+        return f'TycoInstance({self.type_name}: {self.inst_kwargs})'
 
     def __repr__(self):
         return self.__str__()
@@ -818,10 +814,10 @@ class TycoReference:                    # Lazy container class to refer to insta
         self.fragment = fragment
         self.attr_name = None               # set later
         self.parent    = None               # set later
-        self.rendered = self._unrendered                    # TODO set to as_object
+        self._dereference = self._unrendered
 
     def make_copy(self):
-        inst_args = [i.make_copy() for i in self.inst_args]     # TODO maybe this is good for templating??
+        inst_args = [i.make_copy() for i in self.inst_args]
         return self.__class__(self.context, inst_args, self.type_name, self.fragment)
 
     @property
@@ -852,8 +848,9 @@ class TycoReference:                    # Lazy container class to refer to insta
         pass
 
     def render_references(self):
-        struct = self.context._structs[self.type_name]
-        self.rendered = struct.load_reference(self.inst_args)
+        if self._dereference is self._unrendered:
+            struct = self.context._structs[self.type_name]
+            self._dereference = struct.load_reference(self.inst_args)
 
     def render_templates(self):
         pass
@@ -862,16 +859,16 @@ class TycoReference:                    # Lazy container class to refer to insta
         raise TycoParseError(message, self.fragment)
 
     def __getitem__(self, attr_name):
-        return self.rendered[attr_name]
+        return self._dereference[attr_name]
 
     def to_object(self):
-        return self.rendered.to_object()
+        return self._dereference.to_object()
 
     def to_json(self):
-        return self.rendered.to_json()
+        return self._dereference.to_json()
 
     def __str__(self):
-        return f'TycoReference({self.type_name}, {self.inst_args}, {self.rendered})'
+        return f'TycoReference({self.type_name}: {self.inst_args})'
 
     def __repr__(self):
         return self.__str__()
@@ -879,14 +876,16 @@ class TycoReference:                    # Lazy container class to refer to insta
 
 class TycoArray:
 
+    _unrendered = object()
+
     def __init__(self, context, elements, fragment=None):
         self.context = context
         self._elements = elements            # [TycoInstance|TycoValue|TycoReference,...]
         self.fragment = fragment
         self._attr_name = None               # set later
-        self.parent    = None               # set later
-        self._as_object = None              # TODO set this as the standard everywhere instead of rendered
-        self._as_json = None
+        self.parent     = None               # set later
+        self._as_object = self._unrendered
+        self._as_json = self._unrendered
         self._set_element_parents()
 
     def _set_element_parents(self):
@@ -949,24 +948,22 @@ class TycoArray:
         for i in self._elements:
             i.render_templates()
 
-    @property
-    def rendered(self):
-        return [i.rendered for i in self._elements]
-
     def to_object(self):
-        if self._as_object is None:
+        if self._as_object is self._unrendered:
             self._as_object = [i.to_object() for i in self._elements]
         return self._as_object
 
     def to_json(self):
-        if self._as_json is None:
+        if self._as_json is self._unrendered:
             self._as_json = [i.to_json() for i in self._elements]
         return self._as_json
 
     def __str__(self):
-#TODO
-#        return f'TycoArray({self.field_info.type_name} {self.attr_name}: {self._elements})'
-        return f'TycoArray({self.attr_name}: {self._elements})'
+        try:
+            type_name = f'{self.field_info.type_name}: '
+        except Exception:
+            type_name = ''
+        return f'TycoArray({type_name}{self._elements})'
 
     def __repr__(self):
         return self.__str__()
@@ -987,7 +984,8 @@ class TycoValue:
         self.attr_name = None           # set later
         self.parent    = None           # set later
         self.is_literal_str = False
-        self.rendered = self._unrendered
+        self._as_object = self._unrendered
+        self._as_json = self._unrendered
 
     def make_copy(self):
         return self.__class__(self.context, self.fragment)
@@ -1009,7 +1007,7 @@ class TycoValue:
         if self.field_info.is_array is True and not (self.field_info.is_nullable is True and self.fragment == 'null'):
             if not isinstance(self.parent, TycoArray):
                 self._error(f"Schema indicates that this should be an array, but found a single value for '{self.attr_name}'")
-        if self.field_info.type_name is not None and self.field_info.type_name not in self.base_types:      #TODO move check to schema creation
+        if self.field_info.type_name is not None and self.field_info.type_name not in self.base_types:
             self._error(f"Invalid {self.field_info.type_name} type - must be one of: {self.base_types}")
 
     def render_base_content(self):
@@ -1076,7 +1074,7 @@ class TycoValue:
                 )
         else:
             self._error(f"Unsupported type '{self.field_info.type_name}'")
-        self.rendered = rendered
+        self._as_object = rendered
 
     def load_primary_keys(self):
         pass
@@ -1087,7 +1085,7 @@ class TycoValue:
     def render_templates(self):
         if not self.field_info.type_name == 'str' or self.is_literal_str:
             return
-        if self.field_info.is_nullable and self.rendered is None:
+        if self.field_info.is_nullable and self._as_object is None:
             return
 
         def template_render(match):
@@ -1113,26 +1111,28 @@ class TycoValue:
             if obj.field_info.type_name not in ('str', 'int'):
                 self._error(f"Template '{match.group(0)}' can only insert strings or integers "
                             f"(got '{obj.field_info.type_name}')")
-            return str(obj.rendered)
+            return str(obj.to_object())
 
-        rendered = re.sub(self.TEMPLATE_REGEX, template_render, self.rendered)
+        rendered = re.sub(self.TEMPLATE_REGEX, template_render, self._as_object)
         rendered = sub_escape_sequences(rendered)
-        self.rendered = rendered
+        self._as_object = rendered
 
     def to_object(self):
-        return self.rendered
+        return self._as_object
 
     def to_json(self):
-        if isinstance(self.rendered, (datetime.date, datetime.time, datetime.datetime)):
-            return self.rendered.isoformat()
-        elif isinstance(self.rendered, decimal.Decimal):
-            return float(self.rendered)
-        return self.rendered
+        if isinstance(self._as_object, (datetime.date, datetime.time, datetime.datetime)):
+            return self._as_object.isoformat()
+        elif isinstance(self._as_object, decimal.Decimal):
+            return float(self._as_object)
+        return self._as_object
 
     def __str__(self):
-        type_name = None if (self.parent is None or self.attr_name is None) else self.field_info.type_name
-#TODO
-        return f'TycoValue({type_name}, {self.fragment}, {self.rendered})'
+        try:
+            type_name = f'{self.field_info.type_name}: '
+        except Exception:
+            type_name = ''
+        return f'TycoValue({type_name}{self.fragment})'
 
     def __repr__(self):
         return self.__str__()
@@ -1152,7 +1152,8 @@ class _Struct:
         if type_name not in cls._structs:
             cls._structs[type_name] = type(type_name, (Struct,), {})
         obj = cls._structs[type_name](**kwargs)
-        obj.validate()              #TODO is there a better way to avoid collision?
+        if (func := getattr(obj, 'validate', None)) and callable(func):
+            func()
         return obj
 
 
@@ -1177,9 +1178,6 @@ class Struct(types.SimpleNamespace, collections.abc.Mapping):
 
     def __len__(self):
         return len(self.__dict__)
-
-    def validate(self):
-        pass
 
 
 def load(path: Union[str, pathlib.Path, TextIO, int]) -> 'TycoContext':
