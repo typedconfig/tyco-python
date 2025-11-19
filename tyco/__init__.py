@@ -1,5 +1,7 @@
 
-from ._parser import load, loads, Struct
+from ._parser import Struct, TycoException, TycoParseError
+from ._parser import load, loads
+from ._parser import loads_from_json
 
 import importlib.resources
 import os

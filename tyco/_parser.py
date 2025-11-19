@@ -4,6 +4,7 @@ import io
 import os
 import re
 import sys
+import json
 import types
 import string
 import decimal
@@ -15,7 +16,9 @@ import collections.abc
 from typing import TextIO, Union
 
 
-__all__ = ['Struct', 'load', 'loads', 'TycoException', 'TycoParseError']
+__all__ = ['Struct', 'TycoException', 'TycoParseError',
+           'load', 'loads',
+           'loads_from_json']
 
 
 ASCII_CTRL = frozenset(chr(i) for i in range(32)) | frozenset(chr(127))
@@ -642,11 +645,11 @@ TycoField = collections.namedtuple('TycoField', 'type_name is_primary is_nullabl
 
 class TycoStruct:
 
-    def __init__(self, context, type_name):
+    def __init__(self, context, type_name, schema=None):
         self.context = context
         self.type_name = type_name
-        self.schema = collections.OrderedDict()         # {attr_name : TycoField}
-        self.mapped_instances = {}                      # {primary_keys : TycoInstance}
+        self.schema = schema or collections.OrderedDict()   # {attr_name : TycoField}
+        self.mapped_instances = {}                          # {primary_keys : TycoInstance}
 
     @cached_property
     def attr_names(self):
@@ -958,6 +961,15 @@ class TycoArray:
             self._as_json = [i.to_json() for i in self._elements]
         return self._as_json
 
+    @property
+    def type_name(self):        # normally set by the schema, but here inferred for the json converter
+        if not self._elements:
+            return 'null'
+        type_names = set(i.type_name for i in self._elements)
+        if len(type_names) != 1:
+            raise TycoException('Mixed types found in elements')    # this raises then is caught
+        return type_names.pop()
+
     def __str__(self):
         try:
             type_name = f'{self.field_info.type_name}: '
@@ -975,7 +987,7 @@ class TycoArray:
 class TycoValue:
 
     TEMPLATE_REGEX = r'\{([\w\.]+)\}'
-    base_types = {'str', 'int', 'bool', 'float', 'decimal', 'date', 'time', 'datetime'}
+    base_types = {'str', 'int', 'bool', 'float', 'decimal', 'date', 'time', 'datetime', 'null'}
     _unrendered = object()
 
     def __init__(self, context, fragment=None):
@@ -984,6 +996,7 @@ class TycoValue:
         self.attr_name = None           # set later
         self.parent    = None           # set later
         self.is_literal_str = False
+        self._rendered = self._unrendered
         self._as_object = self._unrendered
         self._as_json = self._unrendered
 
@@ -1005,12 +1018,14 @@ class TycoValue:
         if None in (self.parent, self.attr_name):
             raise TycoException(f'Internal parser error: {self.parent=} or {self.attr_name=} not set')
         if self.field_info.is_array is True and not (self.field_info.is_nullable is True and self.fragment == 'null'):
-            if not isinstance(self.parent, TycoArray):
+            if not isinstance(self.parent, TycoArray) and self._as_object is not None:
                 self._error(f"Schema indicates that this should be an array, but found a single value for '{self.attr_name}'")
         if self.field_info.type_name is not None and self.field_info.type_name not in self.base_types:
             self._error(f"Invalid {self.field_info.type_name} type - must be one of: {self.base_types}")
 
     def render_base_content(self):
+        if self._rendered is not self._unrendered:
+            return
         text = str(self.fragment)
         if self.field_info.is_nullable and text == 'null':
             rendered = None
@@ -1074,7 +1089,7 @@ class TycoValue:
                 )
         else:
             self._error(f"Unsupported type '{self.field_info.type_name}'")
-        self._as_object = rendered
+        self._rendered = rendered
 
     def load_primary_keys(self):
         pass
@@ -1083,6 +1098,9 @@ class TycoValue:
         pass
 
     def render_templates(self):
+        if self._as_object is not self._unrendered:
+            return
+        self._as_object = self._rendered
         if not self.field_info.type_name == 'str' or self.is_literal_str:
             return
         if self.field_info.is_nullable and self._as_object is None:
@@ -1118,7 +1136,10 @@ class TycoValue:
         self._as_object = rendered
 
     def to_object(self):
-        return self._as_object
+        if self._as_object is self._unrendered:     # we use the content before templating has been run
+            return self._rendered
+        else:
+            return self._as_object
 
     def to_json(self):
         if isinstance(self._as_object, (datetime.date, datetime.time, datetime.datetime)):
@@ -1127,12 +1148,39 @@ class TycoValue:
             return float(self._as_object)
         return self._as_object
 
+    def set_object(self, value):
+        self._rendered = value
+        self._as_object = value
+
+    @property
+    def type_name(self):        # normally set by the schema, but here inferred for the json converter
+        if type(self._as_object) == str:
+            return 'str'
+        if type(self._as_object) == int:
+            return 'int'
+        if type(self._as_object) == bool:
+            return 'bool'
+        if type(self._as_object) == float:
+            return 'float'
+        if type(self._as_object) == decimal.Decimal:
+            return 'decimal'
+        if type(self._as_object) == datetime.date:
+            return 'date'
+        if type(self._as_object) == datetime.time:
+            return 'time'
+        if type(self._as_object) == datetime.datetime:
+            return 'datetime'
+        if self._as_object is None:
+            return 'null'
+        raise TycoException(f'Unknown type for {self._as_object!r}')
+
     def __str__(self):
         try:
             type_name = f'{self.field_info.type_name}: '
         except Exception:
             type_name = ''
-        return f'TycoValue({type_name}{self.fragment})'
+        content = self.fragment if self._as_object is self._unrendered else self._as_object
+        return f'TycoValue({type_name}{content})'
 
     def __repr__(self):
         return self.__str__()
@@ -1178,6 +1226,111 @@ class Struct(types.SimpleNamespace, collections.abc.Mapping):
 
     def __len__(self):
         return len(self.__dict__)
+
+
+class _JsonConverter:
+
+    @classmethod
+    def convert_to_tyco_instance(cls, context, content_dict, type_name):
+        if not isinstance(content_dict, dict):
+            raise TycoException(f'{path} content must be a dictionary')
+        inst_kwargs = cls.create_inst_kwargs(context, content_dict)
+        return cls.create_tyco_instance(context, inst_kwargs, type_name)
+
+    @classmethod
+    def create_inst_kwargs(cls, context, content_dict):
+        inst_kwargs = collections.OrderedDict()
+        for attr_name, value in content_dict.items():
+            if isinstance(value, dict):
+                attr = cls.convert_to_tyco_instance(context, value, attr_name)
+            elif isinstance(value, list):
+                attr = cls.convert_to_tyco_array(context, value, attr_name)
+            else:
+                attr = cls.convert_to_tyco_value(context, value, attr_name)
+            inst_kwargs[attr_name] = attr
+        return inst_kwargs
+
+    @classmethod
+    def create_tyco_instance(cls, context, inst_kwargs, type_name):
+        schema = cls.create_schema(inst_kwargs, type_name)
+        if type_name is None:                       # special case for global instance
+            context._structs[type_name].schema = schema
+        orig_type_name = type_name
+        increment = 0
+        while True:
+            if type_name not in context._structs:
+                context._structs[type_name] = TycoStruct(context, type_name, schema)
+                break
+            elif cls.check_compatible(schema, context._structs[type_name].schema):      # has side effect 
+                break
+            type_name = f'{orig_type_name}_{increment}'
+            increment += 1
+        for attr_name, attr in inst_kwargs.items():
+            attr.attr_name = attr_name
+        return TycoInstance(context, inst_kwargs, type_name)
+
+    @classmethod
+    def convert_to_tyco_array(cls, context, values, attr_name):
+        elements = []
+        for value in values:
+            if isinstance(value, dict):
+                attr = cls.convert_to_tyco_instance(context, value, attr_name)
+            elif isinstance(value, list):
+                attr = cls.convert_to_tyco_array(context, value, attr_name)
+            else:
+                attr = cls.convert_to_tyco_value(context, value, attr_name)
+            elements.append(attr)
+        attr = TycoArray(context, elements)
+        try:
+            attr.type_name              # if there are mixed types this will raise
+        except Exception:               # and we instead create/return an instance
+            inst_kwargs = {f'attr_{i}' : e for i, e in enumerate(elements)}
+            attr = cls.create_tyco_instance(context, inst_kwargs, attr_name)
+        attr.attr_name = attr_name
+        return attr
+
+    @classmethod
+    def convert_to_tyco_value(cls, context, value, attr_name):
+        attr = TycoValue(context)
+        attr.set_object(value)
+        attr.attr_name = attr_name
+        return attr
+
+    @classmethod
+    def create_schema(cls, inst_kwargs, type_name):
+        schema = collections.OrderedDict()
+        for attr_name, attr in inst_kwargs.items():
+            type_name = attr.type_name
+            is_primary = False
+            is_nullable = False
+            is_array = isinstance(attr, TycoArray)
+            schema[attr_name] = TycoField(type_name, is_primary, is_nullable, is_array)
+        return schema
+
+    @classmethod
+    def check_compatible(cls, new_schema, old_schema):
+        if new_schema.keys() != old_schema.keys():
+            return False
+        for key, new in new_schema.items():
+            old = old_schema[key]
+            if 'null' not in (new.type_name, old.type_name):
+                if new.is_array != old.is_array:
+                    return False
+                if new.type_name != old.type_name:
+                    return False
+        # this part exists to handle when one of the values is null
+        for key, new in new_schema.items():
+            old = old_schema[key]
+            if new == old:
+                continue
+            # if we've gotten here, it means that the field is now nullable
+            if new.type_name == 'null':
+                new = new._replace(type_name=old.type_name, is_nullable=True, is_array=old.is_array)
+            else:
+                old = old._replace(type_name=new.type_name, is_nullable=True, is_array=new.is_array)
+            new_schema[key] = new
+            old_schema[key] = new
+        return True
 
 
 def load(path: Union[str, pathlib.Path, TextIO, int]) -> 'TycoContext':
@@ -1227,39 +1380,11 @@ def loads(content: str) -> 'TycoContext':
     return context
 
 
-#def from_json(path):
-#    with open(path) as f:
-#        content = json.load(f)
-#    context = TycoContext()
-#    _convert_to_tyco(context, content)
-#    return context
-#
-#
-#def _convert_to_tyco(context, content_dict, struct=None):
-#    if not isinstance(content, dict):
-#        raise TycoException(f'{path} content must be a dictionary')
-#    for key, value in content.items():
-#        if type(value) is list:
-#            if {type(v) for v in value} == {dict}:      # list of objects
-#                _load_struct_objects(context, key, value)
-#        if type(value) in (int, float, bool, str):
-#            ...
-#
-#def _load_struct_objects(context, type_name, objects):
-#    if type_name in context._structs:
-#        raise TycoException(f'{type_name} already set up')        # TODO can this come from different sections?
-#    struct = type(type_name, (Struct,))
-#    all_key_types = None
-#    for keyvals in objects:
-#        key_types = {k : type(v) for k, v in keyvals.items()}
-#        if all_key_types is None:
-#            all_key_types = key_types
-#        elif (all_keys := set(all_key_types)) != (keys := set(key_types)):
-#            raise TycoException(f'Inconsistent keys when processing {type_name}: {all_keys} vs {keys}')
-#        elif all_key_types != key_types:
-#            differences = {}
-#            for k, t in all_key_types.items():                  #TODO support None types
-#                if t != key_types[k]:
-#                    differences[k] = (t, key_types[k])
-#            raise TycoException(f'Type of values of {type_name} not consistent: {differences}')
-#
+def loads_from_json(content: str):
+    json_content = json.loads(content)
+    context = TycoContext()
+    type_name = None                # global instance has None for a type_name
+    attr = _JsonConverter.convert_to_tyco_instance(context, json_content, type_name)
+    context._global_instance = attr
+    context._render_content()
+    return context
