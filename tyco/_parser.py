@@ -17,8 +17,7 @@ from typing import TextIO, Union
 
 
 __all__ = ['Struct', 'TycoException', 'TycoParseError',
-           'load', 'loads',
-           'loads_from_json']
+           'load', 'loads', 'load_from_json', 'loads_from_json']
 
 
 ASCII_CTRL = frozenset(chr(i) for i in range(32)) | frozenset(chr(127))
@@ -1388,3 +1387,14 @@ def loads_from_json(content: str):
     context._global_instance = attr
     context._render_content()
     return context
+def load_from_json(path: Union[str, pathlib.Path, TextIO, int]) -> 'TycoContext':
+    """Load Tyco configuration from a JSON document."""
+    if isinstance(path, io.TextIOBase):
+        content = path.read()
+    elif isinstance(path, int):
+        with os.fdopen(path, 'r', closefd=False) as fd:
+            content = fd.read()
+    else:
+        with open(path) as handle:
+            content = handle.read()
+    return loads_from_json(content)

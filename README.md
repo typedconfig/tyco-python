@@ -23,6 +23,10 @@ import tyco
 with tyco.open_example_file() as f:
   context = tyco.load(f.name)
 
+# Or import from JSON directly
+# with open("config.json") as handle:
+#   context = tyco.load_from_json(handle)
+
 # Materialize configuration as Python objects
 config = context.to_object()
 
@@ -283,6 +287,8 @@ json_payload = context.to_json()  # Plain dict ready for json.dumps(...)
 - Struct names (e.g. `Database`) materialize as lists of typed `Struct` instances.
 - `to_json()` materialises the canonical JSON-compatible dictionary (matching the shared test
   suite expectations).
+- `load_from_json()` / `loads_from_json()` import JSON data into the Tyco runtime so you can reuse
+  the same typed object model regardless of the original source format.
 
 ### Working with References
 
