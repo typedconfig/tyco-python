@@ -224,11 +224,12 @@ def cached_property(func):
 
 class TycoLexer:
 
-    ire = r'((?!\d)\w+)'            # regex to match identifiers
-    GLOBAL_SCHEMA_REGEX = rf'([?])?{ire}(\[\])?\s+{ire}\s*:'
+    ire = r'((?!\d)\w+)'            # regex to match identifiers / type names
+    attr_ire = r'((?!\d)[\w\.]+)'   # attribute names may include dots
+    GLOBAL_SCHEMA_REGEX = rf'([?])?{ire}(\[\])?\s+{attr_ire}\s*:'
     STRUCT_BLOCK_REGEX  = rf'^{ire}:'
-    STRUCT_SCHEMA_REGEX = rf'^\s+([*?])?{ire}(\[\])?\s+{ire}\s*:'
-    STRUCT_DEFAULTS_REGEX = rf'\s+{ire}\s*:'
+    STRUCT_SCHEMA_REGEX = rf'^\s+([*?])?{ire}(\[\])?\s+{attr_ire}\s*:'
+    STRUCT_DEFAULTS_REGEX = rf'\s+{attr_ire}\s*:'
     STRUCT_INSTANCE_REGEX = r'\s+-'
 
     @classmethod
@@ -422,7 +423,7 @@ class TycoLexer:
 
     def _load_tyco_attr(self, good_delim=(os.linesep,), bad_delim='', pop_empty_lines=True, allow_attr_name=False):
         bad_delim = set(bad_delim) | set('()[],') - set(good_delim)
-        if match := re.match(rf'{self.ire}\s*:\s*', self.lines[0]):     # times don't match this regex
+        if match := re.match(rf'{self.attr_ire}\s*:\s*', self.lines[0]):     # times don't match this regex
             if not allow_attr_name:
                 error_text = f'Colon : found in content - enclose in quotes to prevent being used as a field name: {match.groups()[0]}'
                 raise TycoParseError(error_text, self.lines[0])
@@ -795,6 +796,9 @@ class TycoInstance:
     def __getitem__(self, attr_name):
         return self.inst_kwargs[attr_name]
 
+    def __contains__(self, attr_name):
+        return attr_name in self.inst_kwargs
+
     def __str__(self):
         return f'TycoInstance({self.type_name}: {self.inst_kwargs})'
 
@@ -862,6 +866,9 @@ class TycoReference:                    # Lazy container class to refer to insta
 
     def __getitem__(self, attr_name):
         return self._dereference[attr_name]
+
+    def __contains__(self, attr_name):
+        return self._dereference.__contains__(attr_name)
 
     def to_object(self):
         return self._dereference.to_object()
@@ -1117,14 +1124,22 @@ class TycoValue:
                     obj = obj.parent
                 if obj is None:
                     self._error(f"Template '{match.group(0)}' references a parent that does not exist")
-            for i, attr in enumerate(template_var.split('.')):
-                try:
-                    obj = obj[attr]
-                except KeyError:
-                    if i == 0 and attr == 'global':
-                        obj = self.context._global_instance.inst_kwargs
-                    else:
-                        self._error(f"Template '{match.group(0)}' references unknown attribute '{attr}'")
+            attributes = template_var.split('.')
+            if not attributes:
+                self._error(f'Empty template content')
+            q = collections.deque(attributes)
+            while q:
+                attr_name = q[0]             # check happy path first
+                if hasattr(obj, '__contains__') and attr_name in obj:
+                    obj = obj[q.popleft()]
+                elif len(q) > 1:
+                    attr_with_dot = f'{q.popleft()}.{q.popleft()}'
+                    q.appendleft(attr_with_dot)
+                elif attributes[0] == 'global':         # local attributes called global get priority
+                    obj = self.context._global_instance.inst_kwargs
+                    q = collections.deque(attributes[1:])
+                else:
+                    self._error(f"Template '{match.group(0)}' references unknown attribute '{attr_name}'")
             if obj.field_info.type_name not in ('str', 'int'):
                 self._error(f"Template '{match.group(0)}' can only insert strings or integers "
                             f"(got '{obj.field_info.type_name}')")

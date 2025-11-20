@@ -81,6 +81,10 @@ def test_templates(tmp_path):
     _run_and_compare('templates.tyco', 'templates.json', tmp_path)
 
 
+def test_templates_attribute_names(tmp_path):
+    _run_and_compare('templates_attribute_names.tyco', 'templates_attribute_names.json', tmp_path)
+
+
 def test_defaults(tmp_path):
     _run_and_compare('defaults.tyco', 'defaults.json', tmp_path)
 
@@ -95,6 +99,10 @@ def test_number_formats(tmp_path):
 
 def test_edge_cases(tmp_path):
     _run_and_compare('edge_cases.tyco', 'edge_cases.json', tmp_path)
+
+
+def test_templates_local_global(tmp_path):
+    _run_and_compare('templates_local_global.tyco', 'templates_local_global.json', tmp_path)
 
 
 def test_include_defaults_override(tmp_path):
