@@ -412,7 +412,7 @@ class TycoLexer:
                 inst = struct.create_instance(inst_args, default_kwargs, instance_fragment)
                 globals_map = self.context._global_instance.inst_kwargs
                 attr_name = struct.type_name
-                if attr_name not in globals_map:
+                if attr_name not in globals_map:                                #TODO handle when name collision with global attr
                     attr = TycoArray(self.context, [], instance_fragment)
                     attr.attr_name = attr_name
                     globals_map[attr_name] = attr
@@ -638,6 +638,24 @@ class TycoContext:
 
     def to_json(self):
         return {a : i.to_json() for a, i in self._global_instance.inst_kwargs.items()}
+
+    def to_tyco(self, compact=False):
+        global_attributes = {}
+        struct_attributes = {}
+        for attr_name, attr in self._global_instance.inst_kwargs.items():
+            if attr_name in self._structs:
+                struct_attributes[attr_name] = attr
+            else:
+                global_attributes[attr_name] = attr
+        output = []     # lines of tyco content
+        # write the global attributes to the top
+        for attr_name, attr in global_attributes.items():
+            output.extend(attr.to_tyco(attr_name, as_schema=True, compact=compact))
+        if global_attributes and not compact:
+            output.append('\n')
+        for type_name, tyco_array in struct_attributes.items():
+            output.extend(tyco_array.to_tyco(attr_name, as_schema=True, compact=compact))
+        return ''.join(output)
 
 
 TycoField = collections.namedtuple('TycoField', 'type_name is_primary is_nullable is_array')
@@ -1402,6 +1420,8 @@ def loads_from_json(content: str):
     context._global_instance = attr
     context._render_content()
     return context
+
+
 def load_from_json(path: Union[str, pathlib.Path, TextIO, int]) -> 'TycoContext':
     """Load Tyco configuration from a JSON document."""
     if isinstance(path, io.TextIOBase):
