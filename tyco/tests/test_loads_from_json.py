@@ -66,5 +66,5 @@ def test_mixed_arrays_convert_to_structs():
     converted = round_trip(original)
 
     assert isinstance(converted["values"], dict)
-    assert converted["values"]["attr_0"] == 1
-    assert converted["values"]["attr_1"] == {"foo": "bar"}
+    assert converted["values"]["_0"] == 1
+    assert converted["values"]["_1"] == {"foo": "bar"}

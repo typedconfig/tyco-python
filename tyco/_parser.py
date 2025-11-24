@@ -271,7 +271,7 @@ class TycoLexer:
     @classmethod
     def from_string(cls, context, content):
         lines = content.splitlines(keepends=True)
-        lexer = TycoLexer(context, lines, path='<string>')
+        lexer = cls(context, lines, path='<string>')
         context._path_cache[id(lexer)] = lexer
         lexer.process()
         return lexer
@@ -281,7 +281,8 @@ class TycoLexer:
         self.source_lines = [SourceString(l, self, i, 1) for i, l in enumerate(source_lines, start=1)]
         self.path = path
         self.lines = collections.deque(self.source_lines)       # what we use to do the work
-        self.defaults = {}       # {type_name : {attr_name : TycoInstance|TycoValue|TycoArray|TycoReference}}
+        self.defaults = {}          # {type_name : {attr_name : TycoInstance|TycoValue|TycoEnum|TycoArray|TycoReference}}
+        self.previous_defaults = {} # {type_name : {attr_name : [TycoInstance|TycoValue|TycoEnum|TycoArray|TycoReference]}}
 
     def process(self):
         while self.lines:
@@ -296,7 +297,14 @@ class TycoLexer:
                     path = os.path.join(rel_dir, path)
                 lexer = self.__class__.from_path(self.context, path)
                 for type_name, attr_defaults in lexer.defaults.items():
-                    self.defaults.setdefault(type_name, {}).update(attr_defaults)
+                    if type_name not in self.defaults:
+                        self.defaults[type_name] = {}
+                    type_defaults = self.defaults[type_name]
+                    for attr_name, attr in attr_defaults.items():
+                        if attr_name in type_defaults:
+                            prev_default = type_defaults.pop(attr_name)
+                            self.previous_defaults.setdefault(type_name, {}).setdefault(attr_name, []).append(prev_default)
+                        type_defaults[attr_name] = attr
                 continue
             if match := re.match(self.GLOBAL_SCHEMA_REGEX, line):
                 self._load_global(line, match)
@@ -359,7 +367,7 @@ class TycoLexer:
             default_content = strip_comments(default_text)
             if default_content:
                 self.lines.appendleft(default_text)
-                attr, delim = self._load_tyco_attr()
+                attr, delim = self._load_tyco_attr(in_schema=True)
                 attr.attr_name = attr_name
                 self.defaults[struct.type_name][attr_name] = attr
 
@@ -383,13 +391,19 @@ class TycoLexer:
                 if attr_name not in struct.schema:
                     raise TycoParseError(f'{attr_name} not found in the schema for {struct}', line)
                 default_text = line.split(':', maxsplit=1)[1].lstrip()
+                type_defaults = self.defaults[struct.type_name]
+                if attr_name in type_defaults:
+                    prev_default = type_defaults.pop(attr_name)
+                    self.previous_defaults.setdefault(struct.type_name, {}).setdefault(attr_name, []).append(prev_default)
+                else:
+                    prev_default = None
                 if strip_comments(default_text):
                     self.lines.appendleft(default_text)
-                    attr, delim = self._load_tyco_attr()
+                    attr, delim = self._load_tyco_attr(in_schema=True)
                     attr.attr_name = attr_name
                     self.defaults[struct.type_name][attr_name] = attr
-                else:
-                    self.defaults[struct.type_name].pop(attr_name, None)          # if empty remove previous defaults
+                elif isinstance(prev_default, TycoEnum):
+                    raise TycoParseError(f'{attr_name} previously set as an enum for {struct}, can not set it to empty')
             elif match := re.match(self.STRUCT_INSTANCE_REGEX, line):
                 self.lines.appendleft(line.split('-', maxsplit=1)[1].lstrip())
                 inst_args = []
@@ -421,7 +435,7 @@ class TycoLexer:
                     self.context._structs[None].schema[attr_name] = TycoField(struct.type_name, is_primary, is_nullable, is_array)
                 globals_map[attr_name].add_element(inst)
 
-    def _load_tyco_attr(self, good_delim=(os.linesep,), bad_delim='', pop_empty_lines=True, allow_attr_name=False):
+    def _load_tyco_attr(self, good_delim=(os.linesep,), bad_delim='', pop_empty_lines=True, allow_attr_name=False, in_schema=False):
         bad_delim = set(bad_delim) | set('()[],') - set(good_delim)
         if match := re.match(rf'{self.attr_ire}\s*:\s*', self.lines[0]):     # times don't match this regex
             if not allow_attr_name:
@@ -436,7 +450,10 @@ class TycoLexer:
         if ch == '[':                                               # inline array
             attr = self._load_tyco_array()
             delim = self._strip_next_delim(good_delim)
-        elif match := re.match(r'(\w+)\(', self.lines[0]):           # inline instance/reference
+        elif ch == '(' and in_schema:                               # enums
+            enums = self._load_tyco_enums()
+            delim = self._strip_next_delim(good_delim)
+        elif match := re.match(r'(\w+)\(', self.lines[0]):          # inline instance/reference
             invocation_fragment = self.lines[0]
             type_name = match.groups()[0]
             self.lines[0] = self.lines[0][match.span()[1]:]
@@ -497,6 +514,12 @@ class TycoLexer:
         self.lines[0] = self.lines[0][1:]       # strip off leading [
         content = self._load_list(']', opening_fragment)
         return TycoArray(self.context, content, opening_fragment)
+
+    def _load_tyco_enums(self):
+        opening_fragment = self.lines[0]
+        self.lines[0] = self.lines[0][1:]       # strip off leading (
+        enums = self._load_list(')', opening_fragment)
+        return TycoEnum(self.context, enums, opening_fragment)
 
     def _load_list(self, closing_char, opening_fragment, allow_attr_name=False):
         good_delims = (closing_char, ',')
@@ -603,17 +626,25 @@ class TycoContext:
 
     def _validate_field_info(self):
         for lexer in self._path_cache.values():
-            for attrs in lexer.defaults.values():
-                for attr in attrs.values():
-                    attr.validate_field_info()
+            for defaults in (lexer.defaults, lexer.previous_defaults):
+                for attrs in defaults.values():
+                    for vals in attrs.values():
+                        if not isinstance(vals, list):
+                            vals = [vals]
+                        for val in vals:
+                            val.validate_field_info()
         for attr in self._global_instance.inst_kwargs.values():
             attr.validate_field_info()
 
     def _render_base_content(self):
         for lexer in self._path_cache.values():
-            for attrs in lexer.defaults.values():
-                for attr in attrs.values():
-                    attr.render_base_content()
+            for defaults in (lexer.defaults, lexer.previous_defaults):
+                for attrs in defaults.values():
+                    for vals in attrs.values():
+                        if not isinstance(vals, list):
+                            vals = [vals]
+                        for val in vals:
+                            val.render_base_content()
         for attr in self._global_instance.inst_kwargs.values():
             attr.render_base_content()
 
@@ -623,9 +654,13 @@ class TycoContext:
 
     def _render_references(self):
         for lexer in self._path_cache.values():
-            for attrs in lexer.defaults.values():       # we render defaults even if they don't get used
-                for attr in attrs.values():
-                    attr.render_references()
+            for defaults in (lexer.defaults, lexer.previous_defaults):
+                for attrs in defaults.values():                 # we render defaults even if they don't get used
+                    for vals in attrs.values():
+                        if not isinstance(vals, list):
+                            vals = [vals]
+                        for val in vals:
+                            val.render_references()
         for attr in self._global_instance.inst_kwargs.values():
             attr.render_references()
 
@@ -641,7 +676,10 @@ class TycoContext:
 
     def to_tyco(self, compact=False):
         global_attributes = {}
-        struct_attributes = {}
+        struct_attributes = collections.OrderedDict()
+        for attr_name, struct in self._structs.items():
+            if attr_name is not None and attr_name not in self._global_instance.inst_kwargs:
+                struct_attributes[attr_name] = None                 # put the inline-only structs first
         for attr_name, attr in self._global_instance.inst_kwargs.items():
             if attr_name in self._structs:
                 struct_attributes[attr_name] = attr
@@ -649,13 +687,52 @@ class TycoContext:
                 global_attributes[attr_name] = attr
         output = []     # lines of tyco content
         # write the global attributes to the top
+        dump_schema = self._create_dump_schema()
+        show_attr = not compact
         for attr_name, attr in global_attributes.items():
-            output.extend(attr.to_tyco(attr_name, as_schema=True, compact=compact))
-        if global_attributes and not compact:
-            output.append('\n')
-        for type_name, tyco_array in struct_attributes.items():
-            output.extend(tyco_array.to_tyco(attr_name, as_schema=True, compact=compact))
+            output.extend(f'{attr.type_name} {attr.to_tyco(dump_schema, show_attr=True)}\n')
+        for i, (type_name, tyco_array) in enumerate(struct_attributes.items()):
+            if i > 0 or global_attributes:
+                output.append('\n')
+            output.append(f'{type_name}:\n')
+            schema, defaults = dump_schema[type_name]
+            for attr_name, field_info in schema.items():
+                options = ' '
+                if field_info.is_primary:
+                    options = '*'
+                elif field_info.is_nullable:
+                    options = '?'
+                array_flag = '[]' if field_info.is_array else ''
+                line = f' {options}{field_info.type_name}{array_flag} {attr_name}:'
+                if attr_name in defaults:
+                    line += f' {defaults[attr_name].to_tyco(dump_schema, show_attr=False)}\n'
+                else:
+                    line += '\n'
+                output.append(line)
+            if tyco_array is not None:          # is set to None above for inline-only structs
+                output.extend(tyco_array.to_tyco(dump_schema, show_attr, base_format=True))
         return ''.join(output)
+        #TODO to_tyco -> dump/dumps, to_object -> as_object, to_json -> as_json + dump/dumps_json
+
+    def _create_dump_schema(self):
+        # order of schema goes from most diverse to most common elements
+        dump_schema = {}        # {type_name : (schema, defaults)}
+        for type_name, struct in self._structs.items():
+            if type_name is None:           # we handle global in the original dump
+                continue
+            most_common = []
+            for attr_name, field_info in struct.schema.items():
+                values = collections.Counter(i[attr_name] for i in struct.instances)
+                val, count =  values.most_common(1)[0]
+                most_common.append((count, attr_name, val, field_info))
+            schema, defaults = collections.OrderedDict(), {}
+            most_common.sort()      # puts them in least common order
+            for count, attr_name, val, field_info in most_common:
+                schema[attr_name] = field_info
+                if count > 1:
+                    defaults[attr_name] = val
+            dump_schema[type_name] = (schema, defaults)
+        return dump_schema
 
 
 TycoField = collections.namedtuple('TycoField', 'type_name is_primary is_nullable is_array')
@@ -667,6 +744,7 @@ class TycoStruct:
         self.context = context
         self.type_name = type_name
         self.schema = schema or collections.OrderedDict()   # {attr_name : TycoField}
+        self.instances = []                                 # used when dumping
         self.mapped_instances = {}                          # {primary_keys : TycoInstance}
 
     @cached_property
@@ -695,16 +773,25 @@ class TycoStruct:
             raise TycoException(f'Internal parser error: fragment missing for struct {self.type_name}')
         inst_kwargs = {}
         for attr_name in self.schema:
-            if attr_name in local_kwargs:
+            if isinstance(default_kwargs.get(attr_name), TycoEnum):
+                enums = default_kwargs[attr_name]
+                if attr_name not in local_kwargs:
+                    raise TycoParseError(f"{attr_name} enum value not set for struct '{self.type_name}'", inst_fragment)
+                val = local_kwargs[attr_name]
+                if not enum.is_valid(val):
+                    raise TycoParseError(f"{attr_name} enum value {val} for struct '{self.type_name}' not in choices: {enums}", inst_fragment)
+            elif attr_name in local_kwargs:
                 attr = local_kwargs[attr_name]
             elif attr_name in default_kwargs:
                 attr = default_kwargs[attr_name].make_copy()
             else:
                 raise TycoParseError(f"Invalid attribute {attr_name} for struct '{self.type_name}': "
-                                     f"value is required and no default is defined", fragment)
+                                     f"value is required and no default is defined", inst_fragment)
             attr.attr_name = attr_name
             inst_kwargs[attr_name] = attr
-        return TycoInstance(self.context, inst_kwargs, self.type_name, inst_fragment)
+        inst = TycoInstance(self.context, inst_kwargs, self.type_name, inst_fragment)
+        self.instances.append(inst)
+        return inst
 
     def load_primary_keys(self, inst):
         if not self.primary_keys:
@@ -726,11 +813,12 @@ class TycoStruct:
             attr.set_parent(self)                   # use a struct instance as the parent since it has the schema
             attr.render_base_content()
             inst_kwargs[attr.attr_name] = attr
-        key = tuple(inst_kwargs[attr_name].to_object() for attr_name in self.primary_keys)
+        ordered_attrs = tuple(inst_kwargs[attr_name] for attr_name in self.primary_keys)
+        key = tuple(a.to_object() for a in ordered_attrs)
         if key not in self.mapped_instances:
             fragment = inst_kwargs[self.primary_keys[0]].fragment
             raise TycoParseError(f"{self.type_name}{key!r} is referenced, but instance can not be found", fragment)
-        return self.mapped_instances[key]
+        return ordered_attrs, self.mapped_instances[key]
 
     def __str__(self):
         return f'TycoStruct({self.type_name})'
@@ -776,7 +864,7 @@ class TycoInstance:
         return self.parent.schema[self.attr_name]
 
     def validate_field_info(self):
-        if None in (self.parent, self.attr_name):
+        if self.parent is None or self.attr_name is None:
             raise TycoException(f'Internal parser error: {self.parent=} or {self.attr_name=} not set')
         if self.field_info.type_name != self.type_name:
             self._error(f"Instance of {self} used for field {self.attr_name} that expects type {self.field_info.type_name}")
@@ -811,11 +899,35 @@ class TycoInstance:
             self._as_json = {a : v.to_json() for a, v in self.inst_kwargs.items()}
         return self._as_json
 
+    def to_tyco(self, dump_schema, show_attr, base_format=False):
+        dumped = []
+        schema, defaults = dump_schema[self.type_name]
+        i_show_attr = show_attr
+        for attr_name in schema:
+            attr = self.inst_kwargs[attr_name]
+            if attr_name in defaults and attr == defaults[attr_name]:
+                i_show_attr = True               # now we have to prefix attr_name:
+            else:
+                dumped.append(attr.to_tyco(dump_schema, i_show_attr))
+        if base_format:
+            return ', '.join(dumped)
+        else:
+            dumped = f'{self.type_name}({", ".join(dumped)})'
+            if show_attr:
+                dumped = f'{self.attr_name}: {dumped}'
+            return dumped
+
     def __getitem__(self, attr_name):
         return self.inst_kwargs[attr_name]
 
     def __contains__(self, attr_name):
         return attr_name in self.inst_kwargs
+
+    def __eq__(self, other):
+        return self.to_object() == other.to_object()
+
+    def __hash__(self):
+        return hash(tuple(self.inst_kwargs[a] for a in self.schema))
 
     def __str__(self):
         return f'TycoInstance({self.type_name}: {self.inst_kwargs})'
@@ -839,6 +951,7 @@ class TycoReference:                    # Lazy container class to refer to insta
         self.attr_name = None               # set later
         self.parent    = None               # set later
         self._dereference = self._unrendered
+        self._ordered_attrs = self._unrendered
 
     def make_copy(self):
         inst_args = [i.make_copy() for i in self.inst_args]
@@ -858,7 +971,7 @@ class TycoReference:                    # Lazy container class to refer to insta
         return self.parent.schema[self.attr_name]
 
     def validate_field_info(self):
-        if None in (self.parent, self.attr_name):
+        if self.parent is None or self.attr_name is None:
             raise TycoException(f'Internal parser error: {self.parent=} or {self.attr_name=} not set')
         if self.field_info.type_name != self.type_name:
             self._error(f"Reference for {self} used for field {self.attr_name} that expects type {self.field_info.type_name}")
@@ -874,7 +987,7 @@ class TycoReference:                    # Lazy container class to refer to insta
     def render_references(self):
         if self._dereference is self._unrendered:
             struct = self.context._structs[self.type_name]
-            self._dereference = struct.load_reference(self.inst_args)
+            self._ordered_attrs, self._dereference = struct.load_reference(self.inst_args)
 
     def render_templates(self):
         pass
@@ -894,8 +1007,60 @@ class TycoReference:                    # Lazy container class to refer to insta
     def to_json(self):
         return self._dereference.to_json()
 
+    def to_tyco(self, *_args, **_kwargs):       # dump_schema and show_attr get ignored
+        ordered_tyco = f', '.join(a.to_tyco() for a in self._ordered_attrs)
+        return f'{self.type_name}({ordered_tyco})'
+
+    def __eq__(self, other):
+        return self.to_object() == other.to_object()
+
+    def __hash__(self):
+        return hash(self._dereference)
+
     def __str__(self):
         return f'TycoReference({self.type_name}: {self.inst_args})'
+
+    def __repr__(self):
+        return self.__str__()
+
+
+class TycoEnum:
+
+    def __init__(self, context, elements, fragment):
+        self.context = context
+        self.elements = set(elements)
+        self.fragment = fragment
+        self.type_name = None
+        self.attr_name = None
+
+    def make_copy(self):
+        return self.__class__(self.context, [i.make_copy() for i in self._elements], self.fragment)
+
+    def validate_field_info(self):
+        for i in self.elements:
+            i.validate_field_info()
+
+    def render_base_content(self):
+        for i in self.elements:
+            i.render_base_content()
+
+    def load_primary_keys(self):
+        for i in self.elements:
+            i.load_primary_keys()
+
+    def render_references(self):
+        for i in self.elements:
+            i.render_references()
+
+    def render_templates(self):
+        for i in self.elements:
+            i.render_templates()
+
+    def is_valid(self, attr):
+        return attr in self.elements
+
+    def __str__(self):
+        return f'TycoEnum({self.type_name} {self.attr_name}: {self.elements})'
 
     def __repr__(self):
         return self.__str__()
@@ -951,7 +1116,7 @@ class TycoArray:
         return self.parent.schema[self.attr_name]
 
     def validate_field_info(self):
-        if None in (self.parent, self.attr_name):
+        if self.parent is None or self.attr_name is None:
             raise TycoException(f'Internal parser error: {self.parent=} or {self.attr_name=} not set')
         if not self.field_info.is_array:
             self._error(f"The schema for '{self.attr_name}' does not indicate this is an array."
@@ -980,6 +1145,18 @@ class TycoArray:
             self._as_object = [i.to_object() for i in self._elements]
         return self._as_object
 
+    def to_tyco(self, dump_schema, show_attr, base_format=False):
+        if base_format:
+            dumped = [i.to_tyco(dump_schema, show_attr, base_format) for i in self._elements]
+            dumped = ''.join(f'  - {d}\n' for d in dumped)
+        else:
+            element_show_attr = False if self.field_info.type_name in TycoValue.base_types else show_attr
+            dumped = [i.to_tyco(dump_schema, element_show_attr) for i in self._elements]
+            dumped = f'[{", ".join(dumped)}]'
+            if show_attr:
+                dumped = f'{self.attr_name}: {dumped}'
+        return dumped
+
     def to_json(self):
         if self._as_json is self._unrendered:
             self._as_json = [i.to_json() for i in self._elements]
@@ -988,11 +1165,17 @@ class TycoArray:
     @property
     def type_name(self):        # normally set by the schema, but here inferred for the json converter
         if not self._elements:
-            return 'null'
+            return 'null'        # default to str when type is unknown TODO FIX
         type_names = set(i.type_name for i in self._elements)
         if len(type_names) != 1:
             raise TycoException('Mixed types found in elements')    # this raises then is caught
         return type_names.pop()
+
+    def __eq__(self, other):
+        return self.to_object() == other.to_object()
+
+    def __hash__(self):
+        return hash(tuple(self._elements))
 
     def __str__(self):
         try:
@@ -1012,6 +1195,7 @@ class TycoValue:
 
     TEMPLATE_REGEX = r'\{([\w\.]+)\}'
     base_types = {'str', 'int', 'bool', 'float', 'decimal', 'date', 'time', 'datetime', 'null'}
+    special_characters = set('{}[],():,#') | set(chr(i) for i in (*range(0x20), 0x7F))
     _unrendered = object()
 
     def __init__(self, context, fragment=None):
@@ -1039,7 +1223,7 @@ class TycoValue:
         return self.parent.schema[self.attr_name]
 
     def validate_field_info(self):
-        if None in (self.parent, self.attr_name):
+        if self.parent is None or self.attr_name is None:
             raise TycoException(f'Internal parser error: {self.parent=} or {self.attr_name=} not set')
         if self.field_info.is_array is True and not (self.field_info.is_nullable is True and self.fragment == 'null'):
             if not isinstance(self.parent, TycoArray) and self._as_object is not None:
@@ -1180,6 +1364,37 @@ class TycoValue:
             return float(self._as_object)
         return self._as_object
 
+    def to_tyco(self, _dump_schema, show_attr):
+        type_name = self.type_name
+        attr_name = self.attr_name
+        if self._as_object is None:
+            dumped = 'null'
+        elif type_name == 'str':
+            if not self._as_object:         # empty string
+                needs_quotes = True
+            elif self._as_object[0].isspace() or self._as_object[-1].isspace():
+                needs_quotes = True
+            elif any(c in self.special_characters for c in self._as_object):
+                needs_quotes = True
+            else:
+                needs_quotes = False
+            if needs_quotes:
+                escaped = self._as_object.replace("\\", "\\\\").replace("'", "\\'")
+                dumped = f"'{escaped}'"
+            else:
+                dumped = self._as_object
+        elif type_name == 'bool':
+            dumped = str(self._as_object).lower()
+        elif type_name in ('date', 'time'):
+            dumped = self._as_object.isoformat()
+        elif type_name == 'datetime':
+            dumped = self._as_object.isoformat(sep=' ')
+        else:
+            dumped = str(self._as_object)
+        if show_attr:
+            dumped = f'{attr_name}: {dumped}'
+        return dumped
+
     def set_object(self, value):
         self._rendered = value
         self._as_object = value
@@ -1205,6 +1420,12 @@ class TycoValue:
         if self._as_object is None:
             return 'null'
         raise TycoException(f'Unknown type for {self._as_object!r}')
+
+    def __eq__(self, other):
+        return self.to_object() == other.to_object()
+
+    def __hash__(self):
+        return hash(self.to_object())
 
     def __str__(self):
         try:
@@ -1299,7 +1520,9 @@ class _JsonConverter:
             increment += 1
         for attr_name, attr in inst_kwargs.items():
             attr.attr_name = attr_name
-        return TycoInstance(context, inst_kwargs, type_name)
+        inst = TycoInstance(context, inst_kwargs, type_name)
+        context._structs[type_name].instances.append(inst)
+        return inst
 
     @classmethod
     def convert_to_tyco_array(cls, context, values, attr_name):
@@ -1316,7 +1539,7 @@ class _JsonConverter:
         try:
             attr.type_name              # if there are mixed types this will raise
         except Exception:               # and we instead create/return an instance
-            inst_kwargs = {f'attr_{i}' : e for i, e in enumerate(elements)}
+            inst_kwargs = {f'_{i}' : e for i, e in enumerate(elements)}         #TODO check if struct type_name has collision with base_types
             attr = cls.create_tyco_instance(context, inst_kwargs, attr_name)
         attr.attr_name = attr_name
         return attr
