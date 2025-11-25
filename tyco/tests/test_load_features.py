@@ -9,6 +9,9 @@ from tyco import load, loads, TycoParseError
 from tyco._parser import _Struct
 
 ROOT = Path(__file__).resolve().parents[1]
+INPUTS_DIR = ROOT / 'tests' / 'inputs'
+if not INPUTS_DIR.exists():
+    INPUTS_DIR = ROOT / 'tests' / 'shared' / 'inputs'
 
 
 def test_loads_basic():
@@ -24,7 +27,7 @@ Server:
   - api1, 3000
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     assert data['environment'] == 'production'
     assert data['port'] == 8080
@@ -36,7 +39,7 @@ Server:
 def test_loads_empty_content():
     """Test loads() with empty content."""
     context = loads("")
-    data = context.to_json()
+    data = context.as_json()
     assert data == {}
 
 
@@ -54,7 +57,7 @@ Server:
   - web1, staging, us-west-2, {name}-{env}-{region}
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     assert data['Server'][0]['hostname'] == 'web1-staging-us-west-2'
 
@@ -103,7 +106,7 @@ Monitor:
     
     # Load the entire directory
     context = load(str(config_dir))
-    data = context.to_json()
+    data = context.as_json()
     
     # Verify all files were loaded
     assert data['environment'] == 'production'
@@ -155,7 +158,7 @@ class User(Struct):
     # Load the directory - validation should trigger once objects materialize
     with pytest.raises(ValueError, match="Invalid email format"):
         context = load(str(config_dir))
-        context.to_object()
+        context.as_object()
 
 
 def test_load_directory_recursive_structure(tmp_path):
@@ -177,7 +180,7 @@ Database:
 """)
     
     context = load(str(base_dir))
-    data = context.to_json()
+    data = context.as_json()
     
     assert data['app_name'] == 'MyApp'
     assert data['timeout'] == 30
@@ -200,7 +203,7 @@ Service:
     
     # Load as single file
     context = load(str(config_file))
-    data = context.to_json()
+    data = context.as_json()
     
     assert data['version'] == '1.0.0'
     assert len(data['Service']) == 2
@@ -228,7 +231,7 @@ def invalid_syntax(
     
     # Should still load successfully, just without validation
     context = load(str(config_dir))
-    data = context.to_json()
+    data = context.as_json()
     assert len(data['Item']) == 1
 
 
@@ -242,7 +245,7 @@ def test_load_directory_no_tyco_files(tmp_path):
     (empty_dir / "config.json").write_text('{"key": "value"}')
     
     context = load(str(empty_dir))
-    data = context.to_json()
+    data = context.as_json()
     assert data == {}
 
 
@@ -261,13 +264,13 @@ Config:
     
     # Test with loads()
     context_loads = loads(content)
-    data_loads = context_loads.to_json()
+    data_loads = context_loads.as_json()
     
     # Test with load() using temp file
     temp_file = tmp_path / "test.tyco"
     temp_file.write_text(content)
     context_load = load(str(temp_file))
-    data_load = context_load.to_json()
+    data_load = context_load.as_json()
     
     assert data_loads == data_load
 
@@ -297,7 +300,7 @@ Service:
 """)
     
     context = load(str(config_dir))
-    data = context.to_json()
+    data = context.as_json()
     
     # Should work even though base.tyco gets loaded twice
     assert data['Service'][0]['db']['name'] == 'primary'
@@ -337,7 +340,7 @@ class Port(Struct):
     try:
         with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
             context = load(str(config_dir))
-            context.to_object()
+            context.as_object()
 
 
     finally:
@@ -354,7 +357,7 @@ Service:
   - api, backup, us-west-2
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     assert [s["tier"] for s in data["Service"]] == ["primary", "backup"]
 
 
@@ -428,7 +431,7 @@ str global_server_name: "{environment}-api-{region}"
     context = loads(content)
     
     # Test that template expansion works for base instances accessing globals directly
-    data = context.to_json()
+    data = context.as_json()
     assert data['global_server_name'] == 'staging-api-us-west-2'
     
     # Test that server instances access globals with global. prefix
@@ -458,7 +461,7 @@ str start_time: 14:30:00
 str end_time: 09:15:30
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     assert data['start_time'] == '14:30:00'
     assert data['end_time'] == '09:15:30'
 
@@ -472,7 +475,7 @@ str config: 'host:port,timeout:30'
 str description: "A service running at https://example.com:8080"
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     assert data['api_url'] == 'https://api.example.com/v1'
     assert data['start_time'] == '14:30:00'
@@ -503,7 +506,7 @@ Server:
   - "api", "https://api.example.com", "service:config"
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     assert data['Server'][0]['url'] == 'https://api.example.com'
     assert data['Server'][0]['endpoint'] == 'service:config'
 
@@ -524,7 +527,7 @@ Person:
 str server_name: "{company}-api-{region}"
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     # Verify global access from struct instances
     assert data['Person'][0]['company'] == 'TechCorp'
@@ -551,7 +554,7 @@ Person:
   - "Alice", "{global.company}", "{name}@{global.company}.com"
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     # Verify direct global access works
     assert data['message'] == "Company TechCorp operates in us-west"
@@ -573,15 +576,15 @@ Organization:
   - "LocalCorp", "local-value", "Using field: {global}"
 """
     context = loads(content)
-    data = context.to_json()
+    data = context.as_json()
     
     # Verify that {global} refers to the local field, not global scope
     assert data['Organization'][0]['global'] == "local-value"
     assert data['Organization'][0]['description'] == "Using field: local-value"
 
 
-def test_to_object_basic_globals():
-    """Ensure to_object() exposes simple global variables."""
+def test_as_object_basic_globals():
+    """Ensure as_object() exposes simple global variables."""
     content = """
 str environment: production
 int port: 8080
@@ -593,7 +596,7 @@ Server:
   - web1
 """
     context = loads(content)
-    config = context.to_object()
+    config = context.as_object()
     
     # Test dot notation access to global variables
     assert config.environment == "production"
@@ -602,8 +605,8 @@ Server:
     assert config.version == 1.2
 
 
-def test_to_object_with_complex_globals():
-    """Ensure to_object() handles arrays and complex global variables."""
+def test_as_object_with_complex_globals():
+    """Ensure as_object() handles arrays and complex global variables."""
     content = """
 str[] environments: ["dev", "staging", "prod"]
 int[] ports: [8080, 8081, 8082]
@@ -613,7 +616,7 @@ Database:
   - primary
 """
     context = loads(content)
-    config = context.to_object()
+    config = context.as_object()
     
     # Test array access
     assert config.environments == ["dev", "staging", "prod"]
@@ -622,15 +625,15 @@ Database:
     assert config.ports[0] == 8080
 
 
-def test_to_object_empty_context():
-    """Ensure to_object() still works without explicit globals."""
+def test_as_object_empty_context():
+    """Ensure as_object() still works without explicit globals."""
     content = """
 Server:
  *str name:
   - web1
 """
     context = loads(content)
-    config = context.to_object()
+    config = context.as_object()
     
     # Should return an object with no attributes (but not fail)
     # We can check if accessing undefined attributes raises AttributeError
@@ -638,8 +641,8 @@ Server:
         _ = config.nonexistent_var
 
 
-def test_to_object_globals_with_templates():
-    """Ensure to_object() resolves templates declared in globals."""
+def test_as_object_globals_with_templates():
+    """Ensure as_object() resolves templates declared in globals."""
     content = """
 str env: staging
 str region: us-west-2
@@ -651,7 +654,7 @@ App:
   - myapp
 """
     context = loads(content)
-    config = context.to_object()
+    config = context.as_object()
     
     # Test that templated globals are expanded
     assert config.env == "staging"
@@ -660,14 +663,14 @@ App:
     assert config.full_domain == "staging.us-west-2.example.com"
 
 
-def test_to_object_attribute_access_vs_dict():
-    """Ensure to_object() returns an object that supports attribute access."""
+def test_as_object_attribute_access_vs_dict():
+    """Ensure as_object() returns an object that supports attribute access."""
     content = """
 str app_name: MyApplication
 int timeout: 30
 """
     context = loads(content)
-    config = context.to_object()
+    config = context.as_object()
     
     # Should work with dot notation
     assert config.app_name == "MyApplication"
@@ -679,3 +682,30 @@ int timeout: 30
     # Should raise AttributeError for undefined attributes
     with pytest.raises(AttributeError):
         _ = config.undefined_attribute
+
+
+def test_dump_and_dumps_round_trip(tmp_path):
+    """Ensure contexts can round-trip via dump/dumps helpers."""
+    source = INPUTS_DIR / 'simple1.tyco'
+    context = load(str(source))
+    dumped = context.dumps()
+    assert isinstance(dumped, str)
+    assert 'project' in dumped
+
+    target = tmp_path / 'roundtrip.tyco'
+    context.dump(target)
+    assert target.read_text(encoding='utf-8') == dumped
+
+
+def test_dump_json_helpers(tmp_path):
+    """Ensure dump_json/dumps_json mirror json.dumps behavior."""
+    source = INPUTS_DIR / 'simple1.tyco'
+    context = load(str(source))
+    json_str = context.dumps_json(sort_keys=True)
+    parsed = json.loads(json_str)
+    assert parsed == context.as_json()
+
+    target = tmp_path / 'config.json'
+    context.dump_json(target, indent=2)
+    from_disk = json.loads(target.read_text(encoding='utf-8'))
+    assert from_disk == context.as_json()

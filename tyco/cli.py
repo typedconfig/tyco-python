@@ -46,7 +46,7 @@ def main(argv=None):
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return 1
 
-    data = context.to_json()
+    data = context.as_json()
     if args.format == "json":
         indent = 2 if args.pretty else None
         json.dump(data, sys.stdout, indent=indent)

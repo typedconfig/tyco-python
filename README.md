@@ -28,7 +28,7 @@ with tyco.open_example_file() as f:
 #   context = tyco.load_from_json(handle)
 
 # Materialize configuration as Python objects
-config = context.to_object()
+config = context.as_object()
 
 # Access global configuration values
 timezone = config.timezone
@@ -43,7 +43,7 @@ host = primary_app.host
 port = primary_app.port
 
 # Export to JSON
-json_data = context.to_json()
+json_data = context.as_json()
 ```
 
 ### Example Tyco File
@@ -271,7 +271,7 @@ Once parsing succeeds you interact with the returned `TycoContext`.
 ```python
 context = tyco.load("tyco/example.tyco")
 
-config = context.to_object()
+config = context.as_object()
 print(config.environment)     # -> "production"
 print(config.timeout)         # -> 30
 
@@ -279,14 +279,23 @@ databases = config["Database"]
 primary = databases[0]
 print(primary.name, primary.host, primary.port)
 
-json_payload = context.to_json()  # Plain dict ready for json.dumps(...)
+json_payload = context.as_json()  # Plain dict ready for json.dumps(...)
+json_text = context.dumps_json(indent=2)
+tyco_text = context.dumps(compact=True)
+with open("roundtrip.tyco", "w", encoding="utf-8") as tyco_fh:
+    context.dump(tyco_fh)  # Writes the verbose form by default
+context.dump_json("roundtrip.json", indent=2)
 ```
 
-- `to_object()` returns a `tyco.Struct` where both globals and struct definitions become
+- `as_object()` returns a `tyco.Struct` where both globals and struct definitions become
   attributes. Use attribute access (`config.debug`) or dictionary-style access (`config['debug']`).
 - Struct names (e.g. `Database`) materialize as lists of typed `Struct` instances.
-- `to_json()` materialises the canonical JSON-compatible dictionary (matching the shared test
-  suite expectations).
+- `as_json()` materialises the canonical JSON-compatible dictionary (matching the shared test
+  suite expectations). Use `dumps_json(**json_kwargs)` / `dump_json(path_or_file, **json_kwargs)`
+  for convenience wrappers around `json.dumps`.
+- `dumps(compact=False)` rebuilds a textual Tyco document. Pass `compact=True` to suppress schema
+  attribute comments; use `dump(file_like_or_path)` to stream directly to disk similar to
+  `pickle.dump`.
 - `load_from_json()` / `loads_from_json()` import JSON data into the Tyco runtime so you can reuse
   the same typed object model regardless of the original source format.
 
@@ -311,7 +320,7 @@ Project:
 
 ```python
 context = tyco.load("projects.tyco")
-projects = context.to_object().Project
+projects = context.as_object().Project
 
 webapp = projects[0]
 owner = webapp.owner           # Already resolved to the underlying User instance
@@ -332,7 +341,7 @@ class Database(tyco.Struct):
             raise ValueError("port must be positive")
 
 context = tyco.load("tyco/example.tyco")
-dbs = context.to_object().Database
+dbs = context.as_object().Database
 print(isinstance(dbs[0], Database))  # True
 ```
 

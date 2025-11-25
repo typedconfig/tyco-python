@@ -24,7 +24,7 @@ if not INPUTS_DIR.exists() or INPUTS_DIR.is_symlink():
 def run_in_process_typo_parser(path):
     """Import parser classes and run the lexer/parser in-process.
 
-    Returns the JSON-serializable structure produced by context.to_json().
+    Returns the JSON-serializable structure produced by context.as_json().
     """
     try:
         from tyco._parser import TycoContext, TycoLexer  # type: ignore
@@ -36,7 +36,7 @@ def run_in_process_typo_parser(path):
     TycoLexer.from_path(context, str(path))
     # ensure content rendered
     context._render_content()
-    return context.to_json()
+    return context.as_json()
 
 
 def _run_and_compare(input_name, expected_name, tmp_path):
@@ -130,7 +130,7 @@ def test_load_from_text_stream():
     with open(example) as handle:
         context = tyco.load(handle)
 
-    config = context.to_object()
+    config = context.as_object()
     assert config.timezone == 'UTC'
 
 
@@ -142,7 +142,7 @@ def test_load_from_file_descriptor():
     finally:
         os.close(fd)
 
-    config = context.to_object()
+    config = context.as_object()
     assert config.timezone == 'UTC'
 
 
@@ -150,7 +150,7 @@ def test_readme_example_usage():
     with tyco.open_example_file() as handle:
         context = tyco.load(handle.name)
 
-    config = context.to_object()
+    config = context.as_object()
     assert config.timezone == 'UTC'
 
     applications = config['Application']
@@ -166,5 +166,5 @@ def test_readme_example_usage():
     assert hosts[1].os == 'Fedora'
     assert ports[0].number == 80
 
-    json_payload = context.to_json()
+    json_payload = context.as_json()
     assert json_payload['Port'][1]['number'] == 3306

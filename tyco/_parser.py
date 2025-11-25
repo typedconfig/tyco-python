@@ -673,13 +673,36 @@ class TycoContext:
         for attr in self._global_instance.inst_kwargs.values():
             attr.render_templates()
 
-    def to_object(self):
-        return Struct(**{a : i.to_object() for a, i in self._global_instance.inst_kwargs.items()})
+    def as_object(self):
+        return Struct(**{a : i.as_object() for a, i in self._global_instance.inst_kwargs.items()})
 
-    def to_json(self):
-        return {a : i.to_json() for a, i in self._global_instance.inst_kwargs.items()}
+    def as_json(self):
+        return {a : i.as_json() for a, i in self._global_instance.inst_kwargs.items()}
 
-    def to_tyco(self, compact=False):
+    def dumps_json(self, **json_kwargs):
+        """Return a JSON string representation of the context."""
+        return json.dumps(self.as_json(), **json_kwargs)
+
+    def dump_json(self, file_or_path: Union[str, os.PathLike, TextIO], **json_kwargs) -> None:
+        """Serialize the context to JSON and write it to a path or file-like object."""
+        content = self.dumps_json(**json_kwargs)
+        if isinstance(file_or_path, (str, os.PathLike)):
+            with open(file_or_path, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+        else:
+            file_or_path.write(content)
+
+    def dump(self, file_or_path: Union[str, os.PathLike, TextIO], compact: bool = False) -> None:
+        """Serialize the context back into Tyco and write it to a path or file-like object."""
+        content = self.dumps(compact=compact)
+        if isinstance(file_or_path, (str, os.PathLike)):
+            with open(file_or_path, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+        else:
+            file_or_path.write(content)
+
+    def dumps(self, compact: bool = False) -> str:
+        """Serialize the context back into Tyco and return it as a string."""
         global_attributes = {}
         struct_attributes = collections.OrderedDict()
         for attr_name, struct in self._structs.items():
@@ -695,7 +718,7 @@ class TycoContext:
         dump_schema = self._create_dump_schema()
         show_attr = not compact
         for attr_name, attr in global_attributes.items():
-            output.extend(f'{attr.type_name} {attr.to_tyco(dump_schema, show_attr=True)}\n')
+            output.extend(f'{attr.type_name} {attr.dump_tyco(dump_schema, show_attr=True)}\n')
         for i, (type_name, tyco_array) in enumerate(struct_attributes.items()):
             if i > 0 or global_attributes:
                 output.append('\n')
@@ -710,14 +733,13 @@ class TycoContext:
                 array_flag = '[]' if field_info.is_array else ''
                 line = f' {options}{field_info.type_name}{array_flag} {attr_name}:'
                 if attr_name in defaults:
-                    line += f' {defaults[attr_name].to_tyco(dump_schema, show_attr=False)}\n'
+                    line += f' {defaults[attr_name].dump_tyco(dump_schema, show_attr=False)}\n'
                 else:
                     line += '\n'
                 output.append(line)
             if tyco_array is not None:          # is set to None above for inline-only structs
-                output.extend(tyco_array.to_tyco(dump_schema, show_attr, base_format=True))
+                output.extend(tyco_array.dump_tyco(dump_schema, show_attr, base_format=True))
         return ''.join(output)
-        #TODO to_tyco -> dump/dumps, to_object -> as_object, to_json -> as_json + dump/dumps_json
 
     def _create_dump_schema(self):
         # order of schema goes from most diverse to most common elements
@@ -802,7 +824,7 @@ class TycoStruct:
     def load_primary_keys(self, inst):
         if not self.primary_keys:
             return
-        key = tuple(inst[k].to_object() for k in self.primary_keys)
+        key = tuple(inst[k].as_object() for k in self.primary_keys)
         if key in self.mapped_instances:
             raise TycoParseError(f"{inst.type_name} with primary key {key} already exists", inst.fragment)
         self.mapped_instances[key] = inst
@@ -820,7 +842,7 @@ class TycoStruct:
             attr.render_base_content()
             inst_kwargs[attr.attr_name] = attr
         ordered_attrs = tuple(inst_kwargs[attr_name] for attr_name in self.primary_keys)
-        key = tuple(a.to_object() for a in ordered_attrs)
+        key = tuple(a.as_object() for a in ordered_attrs)
         if key not in self.mapped_instances:
             fragment = inst_kwargs[self.primary_keys[0]].fragment
             raise TycoParseError(f"{self.type_name}{key!r} is referenced, but instance can not be found", fragment)
@@ -894,18 +916,18 @@ class TycoInstance:
         for i in self.inst_kwargs.values():
             i.render_templates()
 
-    def to_object(self):
+    def as_object(self):
         if self._as_object is self._unrendered:
-            kwargs = {a : v.to_object() for a, v in self.inst_kwargs.items()}
+            kwargs = {a : v.as_object() for a, v in self.inst_kwargs.items()}
             self._as_object = _Struct.create_object(self.context, self.type_name, **kwargs)
         return self._as_object
 
-    def to_json(self):
+    def as_json(self):
         if self._as_json is self._unrendered:
-            self._as_json = {a : v.to_json() for a, v in self.inst_kwargs.items()}
+            self._as_json = {a : v.as_json() for a, v in self.inst_kwargs.items()}
         return self._as_json
 
-    def to_tyco(self, dump_schema, show_attr, base_format=False):
+    def dump_tyco(self, dump_schema, show_attr, base_format=False):
         dumped = []
         schema, defaults = dump_schema[self.type_name]
         i_show_attr = show_attr
@@ -914,7 +936,7 @@ class TycoInstance:
             if attr_name in defaults and attr == defaults[attr_name]:
                 i_show_attr = True               # now we have to prefix attr_name:
             else:
-                dumped.append(attr.to_tyco(dump_schema, i_show_attr))
+                dumped.append(attr.dump_tyco(dump_schema, i_show_attr))
         if base_format:
             return ', '.join(dumped)
         else:
@@ -930,7 +952,7 @@ class TycoInstance:
         return attr_name in self.inst_kwargs
 
     def __eq__(self, other):
-        return self.to_object() == other.to_object()
+        return self.as_object() == other.as_object()
 
     def __hash__(self):
         return hash(tuple(self.inst_kwargs[a] for a in self.schema))
@@ -1007,18 +1029,18 @@ class TycoReference:                    # Lazy container class to refer to insta
     def __contains__(self, attr_name):
         return self._dereference.__contains__(attr_name)
 
-    def to_object(self):
-        return self._dereference.to_object()
+    def as_object(self):
+        return self._dereference.as_object()
 
-    def to_json(self):
-        return self._dereference.to_json()
+    def as_json(self):
+        return self._dereference.as_json()
 
-    def to_tyco(self, *_args, **_kwargs):       # dump_schema and show_attr get ignored
-        ordered_tyco = f', '.join(a.to_tyco() for a in self._ordered_attrs)
+    def dump_tyco(self, *args, **kwargs):       # dump_schema and show_attr get ignored
+        ordered_tyco = f', '.join(a.dump_tyco(*args, **kwargs) for a in self._ordered_attrs)
         return f'{self.type_name}({ordered_tyco})'
 
     def __eq__(self, other):
-        return self.to_object() == other.to_object()
+        return self.as_object() == other.as_object()
 
     def __hash__(self):
         return hash(self._dereference)
@@ -1073,11 +1095,11 @@ class TycoEnum:
     def _choice_values(self):
         for element in self.elements:
             element.render_base_content()
-        return {element.to_object() for element in self.elements}
+        return {element.as_object() for element in self.elements}
 
     def is_valid(self, attr):
         attr.render_base_content()
-        return attr.to_object() in self._choice_values
+        return attr.as_object() in self._choice_values
 
     def __str__(self):
         return f'TycoEnum({self.attr_name}: {self.elements})'
@@ -1160,39 +1182,39 @@ class TycoArray:
         for i in self._elements:
             i.render_templates()
 
-    def to_object(self):
+    def as_object(self):
         if self._as_object is self._unrendered:
-            self._as_object = [i.to_object() for i in self._elements]
+            self._as_object = [i.as_object() for i in self._elements]
         return self._as_object
 
-    def to_tyco(self, dump_schema, show_attr, base_format=False):
+    def dump_tyco(self, dump_schema, show_attr, base_format=False):
         if base_format:
-            dumped = [i.to_tyco(dump_schema, show_attr, base_format) for i in self._elements]
+            dumped = [i.dump_tyco(dump_schema, show_attr, base_format) for i in self._elements]
             dumped = ''.join(f'  - {d}\n' for d in dumped)
         else:
             element_show_attr = False if self.field_info.type_name in TycoValue.base_types else show_attr
-            dumped = [i.to_tyco(dump_schema, element_show_attr) for i in self._elements]
+            dumped = [i.dump_tyco(dump_schema, element_show_attr) for i in self._elements]
             dumped = f'[{", ".join(dumped)}]'
             if show_attr:
                 dumped = f'{self.attr_name}: {dumped}'
         return dumped
 
-    def to_json(self):
+    def as_json(self):
         if self._as_json is self._unrendered:
-            self._as_json = [i.to_json() for i in self._elements]
+            self._as_json = [i.as_json() for i in self._elements]
         return self._as_json
 
     @property
     def type_name(self):        # normally set by the schema, but here inferred for the json converter
         if not self._elements:
-            return 'null'        # default to str when type is unknown TODO FIX
+            return 'null'
         type_names = set(i.type_name for i in self._elements)
         if len(type_names) != 1:
             raise TycoException('Mixed types found in elements')    # this raises then is caught
         return type_names.pop()
 
     def __eq__(self, other):
-        return self.to_object() == other.to_object()
+        return self.as_object() == other.as_object()
 
     def __hash__(self):
         return hash(tuple(self._elements))
@@ -1365,26 +1387,28 @@ class TycoValue:
             if obj.field_info.type_name not in ('str', 'int'):
                 self._error(f"Template '{match.group(0)}' can only insert strings or integers "
                             f"(got '{obj.field_info.type_name}')")
-            return str(obj.to_object())
+            return str(obj.as_object())
 
         rendered = re.sub(self.TEMPLATE_REGEX, template_render, self._as_object)
         rendered = sub_escape_sequences(rendered)
         self._as_object = rendered
 
-    def to_object(self):
+    def as_object(self):
         if self._as_object is self._unrendered:     # we use the content before templating has been run
             return self._rendered
         else:
             return self._as_object
 
-    def to_json(self):
+    def as_json(self):
         if isinstance(self._as_object, (datetime.date, datetime.time, datetime.datetime)):
             return self._as_object.isoformat()
         elif isinstance(self._as_object, decimal.Decimal):
             return float(self._as_object)
         return self._as_object
 
-    def to_tyco(self, _dump_schema, show_attr):
+    def dump_tyco(self, _dump_schema, show_attr):
+        if self._as_object is self._unrendered:
+            self.render_templates()
         type_name = self.type_name
         attr_name = self.attr_name
         if self._as_object is None:
@@ -1442,10 +1466,10 @@ class TycoValue:
         raise TycoException(f'Unknown type for {self._as_object!r}')
 
     def __eq__(self, other):
-        return self.to_object() == other.to_object()
+        return self.as_object() == other.as_object()
 
     def __hash__(self):
-        return hash(self.to_object())
+        return hash(self.as_object())
 
     def __str__(self):
         try:

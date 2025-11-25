@@ -6,7 +6,7 @@ import tyco
 def round_trip(payload):
     """Helper that converts JSON → Tyco context → canonical JSON."""
     context = tyco.loads_from_json(json.dumps(payload))
-    return context.to_json()
+    return context.as_json()
 
 
 def test_round_trip_primary_example():
