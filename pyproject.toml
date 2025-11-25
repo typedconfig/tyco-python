@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tyco"
-version = "0.3.5"
+version = "0.3.6"
 description = "A Python library for the Typed Configuration language"
 license = "MIT"
 readme = "README.md"
