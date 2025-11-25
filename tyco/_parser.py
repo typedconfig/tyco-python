@@ -369,6 +369,11 @@ class TycoLexer:
                 self.lines.appendleft(default_text)
                 attr, delim = self._load_tyco_attr(in_schema=True)
                 attr.attr_name = attr_name
+                if isinstance(attr, TycoEnum):
+                    if type_name not in TycoValue.base_types:
+                        raise TycoParseError(f'Can only set enum values on {TycoValue.base_types}', line)
+                    attr.type_name = type_name
+                    attr.set_parent(struct)
                 self.defaults[struct.type_name][attr_name] = attr
 
     def _load_local_defaults_and_instances(self, struct):
@@ -451,7 +456,7 @@ class TycoLexer:
             attr = self._load_tyco_array()
             delim = self._strip_next_delim(good_delim)
         elif ch == '(' and in_schema:                               # enums
-            enums = self._load_tyco_enums()
+            attr = self._load_tyco_enums()
             delim = self._strip_next_delim(good_delim)
         elif match := re.match(r'(\w+)\(', self.lines[0]):          # inline instance/reference
             invocation_fragment = self.lines[0]
@@ -766,6 +771,7 @@ class TycoStruct:
             else:
                 kwargs_only = True
             local_kwargs[attr.attr_name] = attr
+            attr.set_parent(self)
         inst_fragment = fragment
         if inst_fragment is None and inst_args:
             inst_fragment = getattr(inst_args[0], 'fragment', None)
@@ -777,9 +783,9 @@ class TycoStruct:
                 enums = default_kwargs[attr_name]
                 if attr_name not in local_kwargs:
                     raise TycoParseError(f"{attr_name} enum value not set for struct '{self.type_name}'", inst_fragment)
-                val = local_kwargs[attr_name]
-                if not enum.is_valid(val):
-                    raise TycoParseError(f"{attr_name} enum value {val} for struct '{self.type_name}' not in choices: {enums}", inst_fragment)
+                attr = local_kwargs[attr_name]
+                if not enums.is_valid(attr):
+                    raise TycoParseError(f"{attr_name} enum value {attr} for struct '{self.type_name}' not in choices: {enums}", inst_fragment)
             elif attr_name in local_kwargs:
                 attr = local_kwargs[attr_name]
             elif attr_name in default_kwargs:
@@ -1028,39 +1034,53 @@ class TycoEnum:
 
     def __init__(self, context, elements, fragment):
         self.context = context
-        self.elements = set(elements)
+        self.elements = list(elements)
         self.fragment = fragment
-        self.type_name = None
         self.attr_name = None
+        self.type_name = None
+        self.parent = None
 
     def make_copy(self):
-        return self.__class__(self.context, [i.make_copy() for i in self._elements], self.fragment)
+        return self.__class__(self.context, [i.make_copy() for i in self.elements], self.fragment)
+
+    def set_parent(self, parent):
+        self.parent = parent
+        for element in self.elements:
+            element.attr_name = self.attr_name
+            element.set_parent(parent)
 
     def validate_field_info(self):
-        for i in self.elements:
-            i.validate_field_info()
+        for element in self.elements:
+            element.validate_field_info()
 
     def render_base_content(self):
-        for i in self.elements:
-            i.render_base_content()
+        for element in self.elements:
+            element.render_base_content()
 
     def load_primary_keys(self):
-        for i in self.elements:
-            i.load_primary_keys()
+        for element in self.elements:
+            element.load_primary_keys()
 
     def render_references(self):
-        for i in self.elements:
-            i.render_references()
+        for element in self.elements:
+            element.render_references()
 
     def render_templates(self):
-        for i in self.elements:
-            i.render_templates()
+        for element in self.elements:
+            element.render_templates()
+
+    @cached_property
+    def _choice_values(self):
+        for element in self.elements:
+            element.render_base_content()
+        return {element.to_object() for element in self.elements}
 
     def is_valid(self, attr):
-        return attr in self.elements
+        attr.render_base_content()
+        return attr.to_object() in self._choice_values
 
     def __str__(self):
-        return f'TycoEnum({self.type_name} {self.attr_name}: {self.elements})'
+        return f'TycoEnum({self.attr_name}: {self.elements})'
 
     def __repr__(self):
         return self.__str__()

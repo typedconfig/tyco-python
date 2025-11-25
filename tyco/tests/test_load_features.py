@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from tyco import load, loads
+from tyco import load, loads, TycoParseError
 from tyco._parser import _Struct
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -338,8 +338,48 @@ class Port(Struct):
         with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
             context = load(str(config_dir))
             context.to_object()
+
+
     finally:
         _Struct._structs.pop('Port', None)
+
+
+def test_enum_choices_require_valid_value():
+    content = """
+Service:
+ *str name:
+  str tier: (primary, backup)
+  str region:
+  - web, primary, us-east-1
+  - api, backup, us-west-2
+"""
+    context = loads(content)
+    data = context.to_json()
+    assert [s["tier"] for s in data["Service"]] == ["primary", "backup"]
+
+
+def test_enum_choices_missing_value_raises():
+    content = """
+Service:
+ *str name:
+  str tier: (primary, backup)
+  str region:
+  - name: web, region: us-east-1
+"""
+    with pytest.raises(TycoParseError, match="enum value not set"):
+        loads(content)
+
+
+def test_enum_choices_invalid_selection():
+    content = """
+Service:
+ *str name:
+  str tier: (primary, backup)
+  str region:
+  - name: db, tier: standby, region: us-east-1
+"""
+    with pytest.raises(TycoParseError, match="not in choices"):
+        loads(content)
 
 
 def test_base_instance_parent_relationships():
