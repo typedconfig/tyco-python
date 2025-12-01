@@ -1271,6 +1271,8 @@ class TycoValue:
             if not isinstance(self.parent, TycoArray) and self._as_object is not None:
                 self._error(f"Schema indicates that this should be an array, but found a single value for '{self.attr_name}'")
         if self.field_info.type_name is not None and self.field_info.type_name not in self.base_types:
+            if self._as_object is None:
+                return
             self._error(f"Invalid {self.field_info.type_name} type - must be one of: {self.base_types}")
 
     def render_base_content(self):
