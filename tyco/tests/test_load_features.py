@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from tyco import load, loads, TycoParseError
-from tyco._parser import _Struct
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS_DIR = ROOT / 'tests' / 'inputs'
@@ -211,7 +210,7 @@ Service:
 
 
 def test_python_validator_import_failure_graceful(tmp_path):
-    """Test that invalid Python validators don't break loading."""
+    """Test that invalid Python validators now fail fast with syntax errors."""
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     
@@ -229,10 +228,9 @@ def invalid_syntax(
     missing_closing_paren
 """)
     
-    # Should still load successfully, just without validation
-    context = load(str(config_dir))
-    data = context.as_json()
-    assert len(data['Item']) == 1
+    # Loading should surface the syntax error from the validator module
+    with pytest.raises(SyntaxError):
+        load(str(config_dir))
 
 
 def test_load_directory_no_tyco_files(tmp_path):
@@ -337,14 +335,9 @@ class Port(Struct):
 """)
     
     # Should fail validation once materialized
-    try:
-        with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
-            context = load(str(config_dir))
-            context.as_object()
-
-
-    finally:
-        _Struct._structs.pop('Port', None)
+    with pytest.raises(ValueError, match="Port number 70000 out of valid range"):
+        context = load(str(config_dir))
+        context.as_object()
 
 
 def test_enum_choices_require_valid_value():

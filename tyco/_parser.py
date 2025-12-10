@@ -8,6 +8,7 @@ import json
 import types
 import string
 import decimal
+import inspect
 import pathlib
 import datetime
 import importlib
@@ -247,11 +248,12 @@ class TycoLexer:
                 module_name = os.path.basename(base_filename).replace('-', '_')
                 spec = importlib.util.spec_from_file_location(module_name, module_path)
                 module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                try:
-                    spec.loader.exec_module(module)
-                except Exception:
-                    pass
+                sys.modules[module_name] = module       # temporary - enables relative imports
+                spec.loader.exec_module(module)
+                for name, class_ in inspect.getmembers(module, inspect.isclass):
+                    if issubclass(class_, Struct):
+                        context._classes[name] = class_
+                del sys.modules[module_name]
             with open(path) as f:
                 lines = list(f.readlines())
             lexer = cls(context, lines, path)
@@ -610,7 +612,8 @@ class TycoContext:
     def __init__(self):
         self._path_cache = {}                                 # {path : TycoLexer()}
         self._global_instance = TycoInstance(self, {}, None)  # we put everything into a global instance with type_name None
-        self._structs = {None: TycoStruct(self, None)}        # {type_name : TycoStruct}
+        self._structs = {None: TycoStruct(self, None)}        # {type_name : TycoStruct()}
+        self._classes = {None: Struct}                        # {type_name : Struct}
 
     def _render_content(self):
         self._set_parents()
@@ -673,11 +676,21 @@ class TycoContext:
         for attr in self._global_instance.inst_kwargs.values():
             attr.render_templates()
 
+    def create_object(self, instance):
+        type_name = instance.type_name
+        if type_name not in self._classes:
+            self._classes[type_name] = type(type_name, (Struct,), {})
+        kwargs = {a : v.as_object() for a, v in instance.inst_kwargs.items()}
+        obj = self._classes[type_name](**kwargs)
+        if (func := getattr(obj, 'validate', None)) and callable(func):
+            func()
+        return obj
+
     def as_object(self):
-        return Struct(**{a : i.as_object() for a, i in self._global_instance.inst_kwargs.items()})
+        return self._global_instance.as_object()
 
     def as_json(self):
-        return {a : i.as_json() for a, i in self._global_instance.inst_kwargs.items()}
+        return self._global_instance.as_json()
 
     def dumps_json(self, **json_kwargs):
         """Return a JSON string representation of the context."""
@@ -918,8 +931,7 @@ class TycoInstance:
 
     def as_object(self):
         if self._as_object is self._unrendered:
-            kwargs = {a : v.as_object() for a, v in self.inst_kwargs.items()}
-            self._as_object = _Struct.create_object(self.context, self.type_name, **kwargs)
+            self._as_object = self.context.create_object(self)
         return self._as_object
 
     def as_json(self):
@@ -1488,31 +1500,9 @@ class TycoValue:
         raise TycoParseError(message, self.fragment)
 
 
-class _Struct:
-
-    """Helper attributes and functions held here to avoid name collisions"""
-
-    _structs = {}        # {type_name : struct}     
-
-    @classmethod
-    def create_object(cls, context, type_name, **kwargs):
-        if type_name not in cls._structs:
-            cls._structs[type_name] = type(type_name, (Struct,), {})
-        obj = cls._structs[type_name](**kwargs)
-        if (func := getattr(obj, 'validate', None)) and callable(func):
-            func()
-        return obj
-
-
 class Struct(types.SimpleNamespace, collections.abc.Mapping):
 
     """Base class for user-defined objects materialized from Tyco configuration data."""
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(*kwargs)
-        if cls.__name__ in _Struct._structs:
-            raise TycoException(f'{cls.__name__} struct defined multiple times')
-        _Struct._structs[cls.__name__] = cls
 
     def __getitem__(self, key):
         return self.__dict__[key]
